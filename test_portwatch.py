@@ -373,3 +373,11 @@ class HangDetection(unittest.TestCase):
         watch.tick(time.time(), games)
         watch.tick(time.time(), games)
         self.assertEqual([26844], hangs)
+
+
+class TeardownTiming(unittest.TestCase):
+    def test_reports_how_long_the_server_outlived_the_last_window(self):
+        self.assertEqual("wineserver exited 7s after the last window", pw.teardown_note(1000.0, 1007.4))
+
+    def test_nothing_to_report_without_a_recorded_exit(self):
+        self.assertIsNone(pw.teardown_note(None, 1007.4))

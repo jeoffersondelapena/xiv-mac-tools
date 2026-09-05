@@ -296,6 +296,11 @@ def match_game(diag_started, game_starts):
     return best[0] if best else None
 
 
+def teardown_note(last_exit_at, now):
+    """How long the wineserver outlived the last window; the WAIT verdict depends on this being short."""
+    return None if last_exit_at is None else f"wineserver exited {now - last_exit_at:.0f}s after the last window"
+
+
 def hang_verdict(file_age, has_heartbeat, last_line):
     """A window that has produced heartbeats, then nothing for HANG_AFTER seconds, has frozen.
     A file ending in 'plugin unloading' is IINACT switched off on purpose, not a hang."""
@@ -879,6 +884,7 @@ def watch():
     two_servers_noted = False
     stall_watch = StallWatch()
     hang_watch = HangWatch()
+    last_exit_at = None
     while True:
         live = game_pids()
         running_now = procs("ffxiv_dx11.exe")
@@ -904,6 +910,8 @@ def watch():
         # the ports made it run while a game still held the store and silently do nothing.
         if sync_due(was_running, bool(live)):
             sync_overlay_profiles()
+        if was_running and not live:
+            last_exit_at = time.time()
         was_running = bool(live)
 
         starts_all = {pid: st for pid, st, _, _ in procs("ffxiv_dx11.exe")}
@@ -944,6 +952,12 @@ def watch():
         if live and server_seen and not alive:
             boot_note(f"wineserver vanished while {len(live)} window(s) were running - they cannot recover")
             server_seen = False
+        elif not live and server_seen and not alive:
+            note = teardown_note(last_exit_at, time.time())
+            if note:
+                log(note)
+            server_seen = False
+            last_exit_at = None
         elif alive:
             server_seen = True
 
