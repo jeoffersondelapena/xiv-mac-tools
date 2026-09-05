@@ -12,5 +12,6 @@ Watchers and one command that keep a two-client FFXIV setup on XIV on Mac honest
 | `swap_iinact.py`, `register_dev_plugin.py` | install a locally built plugin as a Dalamud dev plugin |
 | `test_portwatch.py` | the suite; runs before every commit |
 
-New machine: clone to the path above, run `./install.sh`. Logs, samples and config backups are
+New machine: clone to the path above, run `./install.sh`. The overlay port rule (10500 + the Browsingway cache slot)
+is shared with the Browsingway fork; change it in both or not at all. Logs, samples and config backups are
 never committed.
