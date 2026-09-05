@@ -1,23 +1,17 @@
 #!/usr/bin/env python3
-"""Keeps the shared IINACT/Browsingway config armed with a free websocket port.
+"""Watches the two-client FFXIV setup from outside the game.
 
-Both game windows read one pluginConfigs directory, so they would all take port 10501. On macOS the
-most recently bound listener receives every new connection, which means a window whose overlays
-reconnect silently attaches to the other window's fight data. Arming the config with the lowest
-unused port before each launch keeps them separate.
-
-Also reports Browsingway renderers no live game accounts for. The plugin sweeps those at its next
-launch, which does not help when one of two live windows is force-quit.
+Classifies each boot per window (the IINACT port binding is the proof a boot finished), reports and
+sweeps Browsingway renderers no live game accounts for, syncs the meter's settings between windows,
+and detects an IINACT parser stall from its network log. Ports are no longer arranged here: each
+window's Browsingway derives its port from its cache slot and IINACT in that window follows it.
 """
 import os, re, sys, json, time, base64, shutil, subprocess, datetime
 
 BASE = os.path.expanduser("~/Library/Application Support/XIV on Mac")
 CFG = os.path.join(BASE, "pluginConfigs")
-IINACT = os.path.join(CFG, "IINACT", "RainbowMage.OverlayPlugin.config.json")
-BW = os.path.join(CFG, "Browsingway.json")
 LOG = os.path.join(BASE, "wedge-watch", "portwatch.log")
 BOOTLOG = os.path.join(BASE, "wedge-watch", "boots-per-window.log")
-PINFILE = os.path.join(BASE, "wedge-watch", "pinned-port")
 SYNCSTATE = os.path.join(BASE, "wedge-watch", "overlay-sync-state.json")
 WEDGE_AFTER = 150   # a clean boot binds its port in well under a minute
 KILLED_WEDGE_AFTER = 90   # closed before binding, but long past a normal boot: a wedge the user killed
@@ -27,8 +21,6 @@ SLOT_PREFIX = "cef-cache"
 # localStorage, which is per CEF profile, so only the meter drifts between windows.
 DRIFTING_OVERLAY = "DPS"
 
-PORT_RE = re.compile(r'("WSServerPort"\s*:\s*)(\d+)')
-URL_RE = re.compile(r'(127\.0\.0\.1:)(\d{5})')
 # A Wine command line starts with a drive-letter path; anything else merely quoting an .exe name
 # (a shell running a script that mentions one, say) must not be mistaken for the process itself.
 WINE_CMD_RE = re.compile(r'^[A-Za-z]:\\.*?\.exe(?=\s|$)')
@@ -391,35 +383,6 @@ def sync_overlay_profiles(source_override=None):
     write_sync_state(overlay_profiles())
 
 
-def choose_port(pin, live, held, starting):
-    """Which port the shared config should hold.
-
-    Two things read it: a launching window, and any plugin reloaded mid-session. Arming a free port
-    while nothing is launching is what points a reloaded overlay at a port with no server on it.
-    """
-    if pin is not None:
-        return pin
-    if not live:
-        return PORTS[0]
-    if starting:
-        free = [p for p in PORTS if p not in held]
-        return free[0] if free else None
-    if len(held) == 1:
-        return next(iter(held))
-    if held:
-        return max(held)
-    return PORTS[0]
-
-
-def read_pin():
-    """A port the user pinned by hand. With two windows up there is no single correct value for the
-    shared config, so reconnecting one of them means saying which."""
-    try:
-        with open(PINFILE) as f:
-            port = int(f.read().strip())
-        return port if port in PORTS else None
-    except (OSError, ValueError):
-        return None
 
 
 def listening_now():
@@ -510,34 +473,6 @@ def write(path, text):
     os.replace(tmp, path)
 
 
-def current_port():
-    text = read(IINACT)
-    if text is None:
-        return None
-    m = PORT_RE.search(text)
-    return int(m.group(2)) if m else None
-
-
-def arm(port):
-    """Point the shared config at `port`. A running instance keeps the value it loaded."""
-    changed = []
-
-    text = read(IINACT)
-    if text is not None:
-        new = PORT_RE.sub(lambda m: f"{m.group(1)}{port}", text, count=1)
-        if new != text:
-            write(IINACT, new)
-            changed.append("IINACT")
-
-    text = read(BW)
-    if text is not None:
-        new = URL_RE.sub(lambda m: f"{m.group(1)}{port}" if int(m.group(2)) in PORTS else m.group(0), text)
-        if new != text:
-            write(BW, new)
-            changed.append("Browsingway URLs")
-
-    if changed:
-        log(f"armed port {port} ({', '.join(changed)})")
 
 
 def renderer_slot(cmd):
@@ -676,35 +611,6 @@ def report_orphans(kill=False):
     if not kill:
         print("\nre-run with --kill-orphans to stop them")
 
-
-def overlay_commands():
-    """The /bw lines that repoint a window's overlays at its own IINACT.
-
-    Setting `url` updates Browsingway's in-memory config and saves it, so it cannot leave the file
-    and the running plugin disagreeing the way a bare reload can.
-    """
-    import json
-    live = sorted(game_pids())
-    held = bound_ports(set(live))
-    port_of = {pid: port for port, pid in held.items()}
-    if not port_of:
-        print("no window is listening yet; nothing to repoint")
-        return
-    try:
-        cfg = json.load(open(BW))
-    except (OSError, ValueError) as e:
-        print(f"could not read Browsingway config: {e}")
-        return
-    for n, pid in enumerate(live, 1):
-        port = port_of.get(pid)
-        if not port:
-            continue
-        print(f"# window {n} (pid {pid}) -> port {port}")
-        for inlay in cfg.get("Inlays", []):
-            url = re.sub(r"(127\.0\.0\.1:)\d+", rf"\g<1>{port}", inlay.get("Url", ""))
-            name = inlay.get("Name", "").lower().replace(" ", "")
-            print(f"/bw overlay {name} url {url}")
-        print()
 
 
 BUILT_PLUGIN = os.path.expanduser("~/Projects/browsingway-fork/out/Browsingway.dll")
@@ -874,22 +780,8 @@ def status():
     if stale:
         print(stale)
 
-    armed = current_port()
-    pin = read_pin()
-    waiting = [p for p in live if p not in port_of]
-    free = [p for p in PORTS if p not in held]
-
-    print(f"config armed for the next window: {armed}"
-          + (f"   [PINNED to {pin} - run 'xivport unpin' to resume automatic]" if pin else ""))
-    if waiting:
-        print(f"\nWAIT - {len(waiting)} window(s) still loading. Launching another now could "
-              f"give two windows the same port.")
-    elif not free:
-        print("\nBOTH PORTS IN USE - close a window before launching another.")
-    elif launch_verdict(len(live), wineserver_count()) or socket_verdict(wineserver_count(), server_socket_listening()):
-        pass
-    else:
-        print(f"\nSAFE - launch the next window whenever you like; it will take {armed}.")
+    if not launch and not stale:
+        print("\nSAFE - launch the next window whenever you like.")
 
     for line in restart_path_report():
         print(line)
@@ -898,7 +790,6 @@ def status():
 def watch():
     log("portwatch started")
     last = None
-    ready_logged = None
     seen = {}
     last_age = {}
     first_pass = True
@@ -910,19 +801,10 @@ def watch():
         live = game_pids()
         stall_watch.tick(time.time(), procs("ffxiv_dx11.exe"))
         held = bound_ports(live)
-        free = [p for p in PORTS if p not in held]
-        starting = [p for p in live if p not in held.values()]
-
-        # The config has two readers: a launching window, and any plugin RELOADED mid-session
-        # (the crash-recovery macro does exactly that). Arm a free port only while something is
-        # actually launching; otherwise leave it on the running window's own port so a reload
-        # reconnects to that window rather than to an empty one.
-        target = choose_port(pin=read_pin(), live=live, held=held, starting=bool(starting))
-
-        state = (tuple(sorted(held.items())), target)
+        state = tuple(sorted(held.items()))
         if state != last:
             starts = {pid: st for pid, st, _, _ in procs("ffxiv_dx11.exe")}
-            new = [(p, q) for p, q in sorted(held.items()) if (p, q) not in (last[0] if last else ())]
+            new = [(p, q) for p, q in sorted(held.items()) if (p, q) not in (last if last else ())]
             # On the first pass everything already bound would report its process age, not a bind time.
             for port, pid in (new if last is not None else []):
                 if pid in starts:
@@ -938,12 +820,6 @@ def watch():
         if sync_due(was_running, bool(live)):
             sync_overlay_profiles()
         was_running = bool(live)
-
-        # Only advance once a window has BOUND the armed port. Binding is the only proof that the
-        # window has already read the config; moving the value earlier would hand the same port to
-        # two windows, since plugins load long after the process appears.
-        if target is not None and current_port() != target:
-            arm(target)
 
         starts_all = {pid: st for pid, st, _, _ in procs("ffxiv_dx11.exe")}
         if first_pass:
@@ -986,28 +862,12 @@ def watch():
         elif alive:
             server_seen = True
 
-        launching = len(live) - len(held)
-        ready = (launching == 0 and target is not None)
-        if ready != ready_logged:
-            if ready:
-                log(f"port {target} armed and no window mid-launch - safe to start the next window")
-            elif launching > 0:
-                log(f"{launching} window(s) launched but not yet listening - wait before starting another")
-            ready_logged = ready
-
         time.sleep(4)
 
 
 if __name__ == "__main__":
     if "--watch" in sys.argv:
         watch()
-    elif "--pin" in sys.argv:
-        port = int(sys.argv[sys.argv.index("--pin") + 1])
-        if port not in PORTS:
-            sys.exit(f"port must be one of {PORTS}")
-        open(PINFILE, "w").write(str(port))
-        print(f"pinned config to {port}; reload a plugin now and it will use that port")
-        print("run 'xivport unpin' when done so launches get a free port again")
     elif "--sync" in sys.argv:
         if game_pids():
             print("close every game window first; the meter's storage is locked while one is open")
@@ -1021,15 +881,8 @@ if __name__ == "__main__":
                              + ", ".join(p.split("Browsingway/")[1].split("/")[0] for p, _ in overlay_profiles()))
             sync_overlay_profiles(override)
             print("meter settings reconciled across slots")
-    elif "--urls" in sys.argv:
-        overlay_commands()
     elif "--sample" in sys.argv:
         sample_games()
-    elif "--unpin" in sys.argv:
-        try:
-            os.remove(PINFILE); print("unpinned; automatic arming resumed")
-        except FileNotFoundError:
-            print("was not pinned")
     elif "--orphans" in sys.argv or "--kill-orphans" in sys.argv:
         status()
         print()

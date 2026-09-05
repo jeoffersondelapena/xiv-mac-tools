@@ -19,33 +19,6 @@ class CreditUnowned(unittest.TestCase):
         self.assertEqual(pw.credit_unowned({10501}, {7}, {10501: 3}), {10501: 3})
 
 
-class ChoosePort(unittest.TestCase):
-    def test_nothing_running_resets_to_the_first_port(self):
-        self.assertEqual(pw.choose_port(None, live=set(), held={}, starting=False), 10501)
-
-    def test_a_launching_window_gets_a_free_port(self):
-        # Window 1 already holds 10501, window 2 is starting.
-        self.assertEqual(pw.choose_port(None, live={1, 2}, held={10501: 1}, starting=True), 10502)
-
-    def test_the_first_launch_gets_the_first_port(self):
-        self.assertEqual(pw.choose_port(None, live={1}, held={}, starting=True), 10501)
-
-    def test_one_settled_window_keeps_the_config_on_its_own_port(self):
-        # The regression: arming a free port here sends a reloaded overlay to a dead port.
-        self.assertEqual(pw.choose_port(None, live={1}, held={10501: 1}, starting=False), 10501)
-        self.assertEqual(pw.choose_port(None, live={2}, held={10502: 2}, starting=False), 10502)
-
-    def test_nothing_is_armed_when_both_ports_are_taken(self):
-        self.assertIsNone(pw.choose_port(None, live={1, 2}, held={10501: 1, 10502: 2}, starting=True))
-
-    def test_a_pin_overrides_everything(self):
-        self.assertEqual(pw.choose_port(10501, live={1, 2}, held={10501: 1, 10502: 2}, starting=True), 10501)
-        self.assertEqual(pw.choose_port(10502, live=set(), held={}, starting=False), 10502)
-
-    def test_two_settled_windows_pick_one_deterministically(self):
-        # No value is right for both; the pin exists for that case.
-        self.assertEqual(pw.choose_port(None, live={1, 2}, held={10501: 1, 10502: 2}, starting=False), 10502)
-
 
 class Orphans(unittest.TestCase):
     def _match(self, games, renderers):
