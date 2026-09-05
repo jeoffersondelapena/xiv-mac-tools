@@ -360,10 +360,12 @@ class HangDetection(unittest.TestCase):
         d = tempfile.mkdtemp()
         started = time.time() - 600
         frozen = os.path.join(d, "iinact-%s-364.log" % datetime.datetime.fromtimestamp(started).strftime("%Y%m%d-%H%M%S"))
-        open(frozen, "w").write("[x] IINACT loaded\n[x] heartbeat: fine\n")
+        with open(frozen, "w") as f:
+            f.write("[x] IINACT loaded\n[x] heartbeat: fine\n")
         os.utime(frozen, (started + 60, started + 60))
         healthy = os.path.join(d, "iinact-%s-2632.log" % datetime.datetime.fromtimestamp(started + 100).strftime("%Y%m%d-%H%M%S"))
-        open(healthy, "w").write("[x] heartbeat: fine\n")
+        with open(healthy, "w") as f:
+            f.write("[x] heartbeat: fine\n")
         watch = pw.HangWatch(d)
         hangs = []
         watch.on_hang = lambda pid, age, name: hangs.append(pid)
