@@ -269,6 +269,79 @@ class StallWatch:
         notify("IINACT stalled", "Thread sample taken. Restart overlays when you can.")
 
 
+
+# IINACT's per-window diag log carries a heartbeat every minute while the game's frame loop runs, which
+# makes a silent file the cheapest external sign that a live window has frozen (2026-09-06 00:32: one
+# thread spinning in Rosetta's exception server, heartbeats simply stopped).
+IINACT_DIAG_DIR = os.path.join(CFG, "IINACT", "diag")
+HANG_AFTER = 150          # two missed heartbeats
+START_MATCH_SLACK = 20    # the diag name carries Wine's idea of the start time
+
+
+def diag_start_time(name):
+    """Process start time encoded in `iinact-YYYYMMDD-HHMMSS-<pid>.log`, or None."""
+    m = re.match(r"iinact-(\d{8})-(\d{6})-\d+\.log$", name)
+    if not m:
+        return None
+    return datetime.datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").timestamp()
+
+
+def match_game(diag_started, game_starts):
+    """The live game whose start time is closest to the diag file's, within the slack; else None."""
+    best = None
+    for pid, started in game_starts.items():
+        gap = abs(started - diag_started)
+        if gap <= START_MATCH_SLACK and (best is None or gap < best[1]):
+            best = (pid, gap)
+    return best[0] if best else None
+
+
+def hang_verdict(file_age, has_heartbeat, last_line):
+    """A window that has produced heartbeats, then nothing for HANG_AFTER seconds, has frozen.
+    A file ending in 'plugin unloading' is IINACT switched off on purpose, not a hang."""
+    if not has_heartbeat or "plugin unloading" in last_line:
+        return False
+    return file_age > HANG_AFTER
+
+
+class HangWatch:
+    def __init__(self, directory=IINACT_DIAG_DIR):
+        self.directory = directory
+        self.reported = set()
+
+    def tick(self, now, games):
+        starts = {pid: st for pid, st, _, _ in games}
+        try:
+            names = [n for n in os.listdir(self.directory) if n.startswith("iinact-")]
+        except OSError:
+            return
+        for name in names:
+            started = diag_start_time(name)
+            if started is None or now - started > 12 * 3600:
+                continue
+            pid = match_game(started, starts)
+            if pid is None or pid in self.reported:
+                continue
+            path = os.path.join(self.directory, name)
+            try:
+                age = now - os.path.getmtime(path)
+                with open(path, "rb") as f:
+                    tail = f.read()[-4096:].decode("utf-8", "replace")
+            except OSError:
+                continue
+            lines = tail.splitlines()
+            if hang_verdict(age, "heartbeat:" in tail, lines[-1] if lines else ""):
+                self.reported.add(pid)
+                self.on_hang(pid, age, name)
+
+    def on_hang(self, pid, age, name):
+        msg = f"pid {pid}: HANG - no plugin heartbeat for {age:.0f}s while the process lives ({name})"
+        boot_note(msg)
+        out = os.path.join(BASE, "wedge-watch", f"hang-sample-{datetime.datetime.now():%H%M%S}-{pid}.txt")
+        subprocess.run(["sample", str(pid), "5", "-file", out], capture_output=True)
+        log(f"thread sample: {out}")
+        notify("Game window frozen", f"pid {pid}: no plugin heartbeat for {age:.0f}s. Force Quit it, then xivport clean.")
+
 def notify(title, text):
     subprocess.run(["osascript", "-e", f'display notification "{text}" with title "{title}"'],
                    capture_output=True)
@@ -797,9 +870,12 @@ def watch():
     server_seen = False
     two_servers_noted = False
     stall_watch = StallWatch()
+    hang_watch = HangWatch()
     while True:
         live = game_pids()
-        stall_watch.tick(time.time(), procs("ffxiv_dx11.exe"))
+        running_now = procs("ffxiv_dx11.exe")
+        stall_watch.tick(time.time(), running_now)
+        hang_watch.tick(time.time(), running_now)
         held = bound_ports(live)
         state = tuple(sorted(held.items()))
         if state != last:

@@ -332,3 +332,42 @@ class NetLogTailing(unittest.TestCase):
             f.write("21|t|a|b\n")
         watch.tick(1008.0, games=[])
         self.assertFalse(watch.stalled)
+
+
+class HangDetection(unittest.TestCase):
+    def test_the_diag_name_carries_the_start_time(self):
+        self.assertEqual(datetime.datetime(2026, 9, 6, 0, 25, 25).timestamp(), pw.diag_start_time("iinact-20260906-002525-364.log"))
+        self.assertIsNone(pw.diag_start_time("doctor-20260906-002525-364.log"))
+
+    def test_a_diag_file_is_matched_to_the_game_that_started_with_it(self):
+        starts = {26844: 1000.0, 28015: 1240.0}
+        self.assertEqual(26844, pw.match_game(1005.0, starts))
+        self.assertEqual(28015, pw.match_game(1230.0, starts))
+        self.assertIsNone(pw.match_game(1120.0, starts))
+
+    def test_silence_after_heartbeats_is_a_hang(self):
+        self.assertTrue(pw.hang_verdict(file_age=200, has_heartbeat=True, last_line="[00:32:01.952] heartbeat: ..."))
+
+    def test_recent_writes_or_no_heartbeat_yet_are_not(self):
+        self.assertFalse(pw.hang_verdict(file_age=40, has_heartbeat=True, last_line="heartbeat"))
+        self.assertFalse(pw.hang_verdict(file_age=500, has_heartbeat=False, last_line="[00:25:41] unscrambler: ..."))
+
+    def test_iinact_switched_off_on_purpose_is_not_a_hang(self):
+        self.assertFalse(pw.hang_verdict(file_age=500, has_heartbeat=True, last_line="[23:41:56.973] plugin unloading"))
+
+    def test_the_watch_reports_a_frozen_window_once_and_leaves_the_healthy_one_alone(self):
+        import tempfile, time
+        d = tempfile.mkdtemp()
+        started = time.time() - 600
+        frozen = os.path.join(d, "iinact-%s-364.log" % datetime.datetime.fromtimestamp(started).strftime("%Y%m%d-%H%M%S"))
+        open(frozen, "w").write("[x] IINACT loaded\n[x] heartbeat: fine\n")
+        os.utime(frozen, (started + 60, started + 60))
+        healthy = os.path.join(d, "iinact-%s-2632.log" % datetime.datetime.fromtimestamp(started + 100).strftime("%Y%m%d-%H%M%S"))
+        open(healthy, "w").write("[x] heartbeat: fine\n")
+        watch = pw.HangWatch(d)
+        hangs = []
+        watch.on_hang = lambda pid, age, name: hangs.append(pid)
+        games = [(26844, started, 99.0, "cmd"), (28015, started + 100, 40.0, "cmd")]
+        watch.tick(time.time(), games)
+        watch.tick(time.time(), games)
+        self.assertEqual([26844], hangs)
