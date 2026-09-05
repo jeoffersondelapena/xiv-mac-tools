@@ -148,7 +148,8 @@ def sync_clone(plugin, sha):
     clone, branch = plugin["clone"], plugin["branch"]
     sh(["git", "fetch", "fork", branch], cwd=clone)
     status = sh(["git", "status", "--short"], cwd=clone)
-    unpushed = int(sh(["git", "rev-list", "--count", f"fork/{branch}@{{1}}..{branch}"], cwd=clone, check=False) or 0)
+    # A rebase rewrites every commit, so compare patches, not hashes: only work that is truly absent upstream counts.
+    unpushed = sum(1 for l in sh(["git", "cherry", f"fork/{branch}", branch], cwd=clone, check=False).splitlines() if l.startswith("+"))
     if not clone_is_clean(status, unpushed):
         return f"clone not synced: {'uncommitted changes' if status.strip() else f'{unpushed} unpushed commit(s)'}"
     sh(["git", "checkout", "-q", branch], cwd=clone)
