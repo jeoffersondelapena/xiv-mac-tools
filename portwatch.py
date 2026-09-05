@@ -340,7 +340,7 @@ class HangWatch:
         out = os.path.join(BASE, "wedge-watch", f"hang-sample-{datetime.datetime.now():%H%M%S}-{pid}.txt")
         subprocess.run(["sample", str(pid), "5", "-file", out], capture_output=True)
         log(f"thread sample: {out}")
-        notify("Game window frozen", f"pid {pid}: no plugin heartbeat for {age:.0f}s. Force Quit it, then xivport clean.")
+        notify("Game window frozen", f"pid {pid}: no plugin heartbeat for {age:.0f}s. Force Quit it; leftovers are cleared for you.")
 
 def notify(title, text):
     subprocess.run(["osascript", "-e", f'display notification "{text}" with title "{title}"'],
@@ -606,14 +606,11 @@ def orphan_renderers():
     return [r for r in renderers if r[0] not in claimed]
 
 
-def report_orphans(kill=False):
+def sweep_orphan_renderers(kill, say=print):
+    """Renderers, their browser processes and crash handlers whose game is gone. A game that no longer
+    exists is the whole test, so the watcher runs this on its own; returns how many orphans it saw."""
     orphans = orphan_renderers()
-    if not orphans and not orphans_of("DalamudCrashHandler.exe") and (wineserver_alive() or not wine_procs()) \
-            and not sweep_plan(len(game_pids()), wineserver_count(), len(wine_procs())) \
-            :
-        print("no orphaned renderers")
-        return
-
+    handlers = orphans_of("DalamudCrashHandler.exe")
     orphan_pids = {o[0] for o in orphans}
     live_slots = {renderer_slot(cmd) for pid, _, _, cmd in procs("Browsingway.Renderer.exe")
                   if pid not in orphan_pids}
@@ -624,22 +621,33 @@ def report_orphans(kill=False):
         slot = renderer_slot(cmd)
         # Only sweep a slot's browser processes when no surviving renderer is still using it.
         strays = [c for c, cslot in children if slot and cslot == slot and cslot not in live_slots]
-        print(f"orphaned renderer pid {pid}: {cpu}% CPU, started {age} min ago, "
-              f"slot {slot or 'unknown'}, {len(strays)} browser process(es)")
+        say(f"orphaned renderer pid {pid}: {cpu}% CPU, started {age} min ago, "
+            f"slot {slot or 'unknown'}, {len(strays)} browser process(es)")
         if kill:
             for c in strays:
                 subprocess.run(["kill", "-9", str(c)])
             subprocess.run(["kill", "-9", str(pid)])
-            print(f"  killed renderer {pid} and {len(strays)} browser process(es)")
+            say(f"  killed renderer {pid} and {len(strays)} browser process(es)")
 
     # Dalamud's crash handler is one-per-game too, and a frozen game's can outlive the whole Wine
     # tree, idle and deaf to SIGTERM.
-    for pid, started, cpu, _ in orphans_of("DalamudCrashHandler.exe"):
+    for pid, started, cpu, _ in handlers:
         age = int((time.time() - started) / 60)
-        print(f"orphaned crash handler pid {pid}: {cpu}% CPU, started {age} min ago")
+        say(f"orphaned crash handler pid {pid}: {cpu}% CPU, started {age} min ago")
         if kill:
             subprocess.run(["kill", "-9", str(pid)])
-            print(f"  killed crash handler {pid}")
+            say(f"  killed crash handler {pid}")
+    return len(orphans) + len(handlers)
+
+
+def report_orphans(kill=False):
+    if not orphan_renderers() and not orphans_of("DalamudCrashHandler.exe") and (wineserver_alive() or not wine_procs()) \
+            and not sweep_plan(len(game_pids()), wineserver_count(), len(wine_procs())) \
+            :
+        print("no orphaned renderers")
+        return
+
+    sweep_orphan_renderers(kill)
 
     plan = sweep_plan(len(game_pids()), wineserver_count(), len(wine_procs()))
     if plan and wineserver_alive():
@@ -876,6 +884,7 @@ def watch():
         running_now = procs("ffxiv_dx11.exe")
         stall_watch.tick(time.time(), running_now)
         hang_watch.tick(time.time(), running_now)
+        sweep_orphan_renderers(kill=True, say=log)
         held = bound_ports(live)
         state = tuple(sorted(held.items()))
         if state != last:
