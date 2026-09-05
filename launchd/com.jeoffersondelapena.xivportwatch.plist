@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.jeoffersondelapena.xivportwatch</string>
+  <key>ProgramArguments</key>
+  <array><string>/usr/bin/python3</string><string>__HOME__/Library/Application Support/XIV on Mac/wedge-watch/portwatch.py</string><string>--watch</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>__HOME__/Library/Application Support/XIV on Mac/wedge-watch/portwatch.stdout.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Application Support/XIV on Mac/wedge-watch/portwatch.stdout.log</string>
+</dict>
+</plist>

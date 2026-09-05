@@ -1,0 +1,10 @@
+# Runtime output stays on the machine it came from: logs, samples, captures, state and config backups
+# (the backups hold plugin configs that can carry a character name).
+*.log
+*.txt
+*.json
+*.bak
+backups/
+pinned-port
+__pycache__/
+iinact-stall-report-draft.md

@@ -1,0 +1,17 @@
+#!/bin/sh
+# Port + renderer status for the two-window FFXIV setup.
+#   xivport            status and orphans
+#   xivport clean      also kill orphaned renderers
+#   xivport pin 10501  hold the shared config on one port (before reloading a plugin)
+#   xivport unpin      resume automatic arming
+#   xivport sample     thread-sample every game window (run while the meter is stale, before restarting overlays)
+S="$HOME/Library/Application Support/XIV on Mac/wedge-watch/portwatch.py"
+case "$1" in
+  clean) exec /usr/bin/python3 "$S" --kill-orphans ;;
+  pin)   exec /usr/bin/python3 "$S" --pin "$2" ;;
+  unpin) exec /usr/bin/python3 "$S" --unpin ;;
+  urls)  exec /usr/bin/python3 "$S" --urls ;;
+  sample) exec /usr/bin/python3 "$S" --sample ;;
+  sync)  exec /usr/bin/python3 "$S" --sync ;;
+  *)     exec /usr/bin/python3 "$S" ;;
+esac
