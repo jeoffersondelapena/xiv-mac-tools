@@ -52,8 +52,33 @@ def dalamud_enabled():
     return out != "0"
 
 
-def initial_state(dalamud_on):
-    return "pending" if dalamud_on else "untracked"
+def iinact_set_to_load():
+    """Whether Dalamud will load IINACT at all: the dev build registered and enabled in the default
+    profile, or the repo install present. With neither, no port binds and a good boot looks wedged."""
+    try:
+        cfg = json.load(open(os.path.join(BASE, "dalamudConfig.json")))
+    except (OSError, ValueError):
+        return True
+    return iinact_enabled_in(cfg, os.path.isdir(os.path.join(BASE, "installedPlugins", "IINACT")))
+
+
+def iinact_enabled_in(cfg, repo_installed):
+    if repo_installed:
+        return True
+    locations = cfg.get("DevPluginLoadLocations", {}).get("$values", [])
+    settings = cfg.get("DevPluginSettings", {})
+    profile = cfg.get("DefaultProfile", {}).get("Plugins", {}).get("$values", [])
+    for entry in locations:
+        if not entry.get("Path", "").endswith("\\IINACT.dll") or not entry.get("IsEnabled"):
+            continue
+        plugin_id = settings.get(entry["Path"], {}).get("WorkingPluginId")
+        if any(e.get("WorkingPluginId") == plugin_id and e.get("IsEnabled") for e in profile):
+            return True
+    return False
+
+
+def initial_state(dalamud_on, iinact_on=True):
+    return "pending" if dalamud_on and iinact_on else "untracked"
 
 
 def classify_live(state, bound, age):
@@ -937,9 +962,11 @@ def watch():
             age = time.time() - starts_all.get(pid, time.time())
             last_age[pid] = age
             if pid not in seen:
-                seen[pid] = initial_state(dalamud_enabled())
+                dalamud_on, iinact_on = dalamud_enabled(), iinact_set_to_load()
+                seen[pid] = initial_state(dalamud_on, iinact_on)
                 if seen[pid] == "untracked":
-                    boot_note(f"pid {pid}: Dalamud is off; boot not tracked (no port will bind)")
+                    why = "Dalamud is off" if not dalamud_on else "IINACT is not set to load"
+                    boot_note(f"pid {pid}: {why}; boot not tracked (no port will bind)")
             seen[pid], msg = classify_live(seen[pid], bound, age)
             if msg:
                 boot_note(f"pid {pid}: {msg}")

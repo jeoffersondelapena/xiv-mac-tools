@@ -176,6 +176,29 @@ class DalamudOffBoots(unittest.TestCase):
         self.assertEqual(pw.classify_live("untracked", None, 999), ("untracked", None))
         self.assertIsNone(pw.classify_gone("untracked", 999))
 
+    def test_not_tracked_when_iinact_will_not_load(self):
+        # 2026-09-05 20:21: the fork was registered but disabled in the profile; the boot was filed as wedged.
+        self.assertEqual(pw.initial_state(True, iinact_on=False), "untracked")
+
+    def cfg(self, enabled_location=True, enabled_profile=True, plugin_id="abc"):
+        path = "Z:\\Users\\x\\Projects\\iinact-fork\\IINACT\\bin\\Release\\win-x64\\IINACT.dll"
+        return {
+            "DevPluginLoadLocations": {"$values": [{"Path": path, "IsEnabled": enabled_location}]},
+            "DevPluginSettings": {path: {"WorkingPluginId": plugin_id}},
+            "DefaultProfile": {"Plugins": {"$values": [
+                {"InternalName": "IINACT", "WorkingPluginId": "old-repo-id", "IsEnabled": True},
+                {"InternalName": "IINACT", "WorkingPluginId": plugin_id, "IsEnabled": enabled_profile},
+            ]}},
+        }
+
+    def test_the_dev_fork_counts_only_when_its_own_profile_entry_is_enabled(self):
+        self.assertTrue(pw.iinact_enabled_in(self.cfg(), repo_installed=False))
+        self.assertFalse(pw.iinact_enabled_in(self.cfg(enabled_profile=False), repo_installed=False))
+        self.assertFalse(pw.iinact_enabled_in(self.cfg(enabled_location=False), repo_installed=False))
+
+    def test_a_repo_install_counts_regardless(self):
+        self.assertTrue(pw.iinact_enabled_in(self.cfg(enabled_profile=False), repo_installed=True))
+
 
 class BootOutcome(unittest.TestCase):
     def test_binding_is_a_clean_boot(self):
