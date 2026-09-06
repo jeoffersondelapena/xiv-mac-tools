@@ -16,6 +16,11 @@ class WhenToSync(unittest.TestCase):
         self.assertFalse(us.needs_sync({"synced_upstream": "aaa"}, "aaa"))
         self.assertFalse(us.needs_sync({"failed_upstream": "bbb"}, "bbb"))
 
+    def test_a_failed_head_is_retried_once_the_fork_branch_was_pushed_by_hand(self):
+        state = {"failed_upstream": "bbb", "failed_branch": "f1"}
+        self.assertFalse(us.needs_sync(state, "bbb", branch_head="f1"))
+        self.assertTrue(us.needs_sync(state, "bbb", branch_head="f2"))
+
     def test_an_api_mismatch_is_retried_once_this_macs_dalamud_changed(self):
         state = {"failed_upstream": "bbb", "failed_api_level": 15}
         self.assertFalse(us.needs_sync(state, "bbb", local_api_level=15))

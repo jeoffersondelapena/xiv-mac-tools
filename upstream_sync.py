@@ -51,12 +51,14 @@ def game_running():
 
 # --- pure decisions -------------------------------------------------------------------------------
 
-def needs_sync(state, upstream_head, local_api_level=None):
-    """A new upstream head means work. A head that already failed is retried only when the failure was a
-    Dalamud API mismatch and this Mac's Dalamud has changed since."""
+def needs_sync(state, upstream_head, local_api_level=None, branch_head=None):
+    """A new upstream head means work. A head that already failed is retried when the fork's branch has
+    been pushed since (a conflict resolved by hand) or, for an API mismatch, when this Mac's Dalamud changed."""
     if upstream_head == state.get("synced_upstream"):
         return False
     if upstream_head == state.get("failed_upstream"):
+        if branch_head is not None and branch_head != state.get("failed_branch"):
+            return True
         failed_level = state.get("failed_api_level")
         return failed_level is not None and failed_level != local_api_level
     return True
@@ -100,6 +102,10 @@ def clone_is_clean(status_short, unpushed):
 
 def upstream_head(plugin):
     return sh(["gh", "api", f"repos/{plugin['upstream']}/commits/{plugin['upstream_branch']}", "--jq", ".sha"])
+
+
+def branch_head(plugin):
+    return sh(["gh", "api", f"repos/{plugin['fork']}/commits/{plugin['branch']}", "--jq", ".sha"])
 
 
 def dispatch_and_wait(plugin):
@@ -211,13 +217,14 @@ def sync_one(plugin, state):
     if pending:
         return finish_install(plugin, st, pending)
     head = upstream_head(plugin)
-    if not needs_sync(st, head, local_api_level()):
+    if not needs_sync(st, head, local_api_level(), branch_head(plugin)):
         return
     st.pop("failed_api_level", None)
     log(f"{name}: upstream {plugin['upstream']} moved to {head[:7]}; running the fork's workflow")
     conclusion, run_id = dispatch_and_wait(plugin)
     if conclusion != "success":
         st["failed_upstream"] = head
+        st["failed_branch"] = branch_head(plugin)
         log(f"{name}: workflow run {run_id} ended with {conclusion}; the branch was left alone")
         notify(f"{name}: upstream sync needs a hand", f"The rebase or build failed (run {run_id}).")
         set_attention(name, f"upstream sync needs a hand (workflow run {run_id} {conclusion})")
@@ -228,6 +235,7 @@ def sync_one(plugin, state):
                         lambda rel: open(os.path.join(dest, rel), "rb").read() if os.path.exists(os.path.join(dest, rel)) else None)
     if bad:
         st["failed_upstream"] = head
+        st["failed_branch"] = branch_head(plugin)
         log(f"{name}: artifact hash mismatch on {bad}; not installed")
         notify(f"{name}: build rejected", "Downloaded files did not match their hash list.")
         set_attention(name, "a downloaded build failed its hash check and was not installed")
@@ -235,6 +243,7 @@ def sync_one(plugin, state):
     level, local = artifact_api_level(dest, plugin["manifest"]), local_api_level()
     if not api_level_compatible(level, local):
         st["failed_upstream"] = head
+        st["failed_branch"] = branch_head(plugin)
         st["failed_api_level"] = local
         log(f"{name}: build targets Dalamud API {level}, this Mac runs {local}; not installed")
         notify(f"{name}: build not installed", f"Built for Dalamud API {level}; this Mac runs {local}.")
@@ -257,6 +266,7 @@ def finish_install(plugin, st, pending):
     st.pop("pending_install", None)
     st.pop("failed_upstream", None)
     st.pop("failed_api_level", None)
+    st.pop("failed_branch", None)
     set_attention(name, None)
     log(f"{name}: installed build {pending['sha'][:7]} (upstream {pending['upstream'][:7]}); {note}")
     notify(f"{name} updated", f"Rebased on upstream {pending['upstream'][:7]}; loads at the next launch. {note}.")
