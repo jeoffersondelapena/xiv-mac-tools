@@ -10,6 +10,7 @@ import datetime, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
 
 BASE = os.path.expanduser("~/Library/Application Support/XIV on Mac")
 STATE = os.path.join(BASE, "wedge-watch", "upstream-sync-state.json")
+ATTENTION = os.path.join(BASE, "pluginConfigs", "OverlayDoctor", "attention.txt")
 LOG = os.path.join(BASE, "wedge-watch", "upstream-sync.log")
 WORKFLOW = "upstream-sync.yml"
 RUN_TIMEOUT = 25 * 60
@@ -50,9 +51,23 @@ def game_running():
 
 # --- pure decisions -------------------------------------------------------------------------------
 
-def needs_sync(state, upstream_head):
-    """A new upstream head means work; the same head that already failed is not retried."""
-    return upstream_head not in (state.get("synced_upstream"), state.get("failed_upstream"))
+def needs_sync(state, upstream_head, local_api_level=None):
+    """A new upstream head means work. A head that already failed is retried only when the failure was a
+    Dalamud API mismatch and this Mac's Dalamud has changed since."""
+    if upstream_head == state.get("synced_upstream"):
+        return False
+    if upstream_head == state.get("failed_upstream"):
+        failed_level = state.get("failed_api_level")
+        return failed_level is not None and failed_level != local_api_level
+    return True
+
+
+def attention_lines(existing, plugin, note):
+    """The attention file, one line per plugin: replace this plugin's line, drop it when note is None."""
+    kept = [l for l in existing.splitlines() if l.strip() and not l.startswith(plugin + ":")]
+    if note:
+        kept.append(f"{plugin}: {note}")
+    return "".join(l + "\n" for l in kept)
 
 
 def artifact_name(plugin, sha):
@@ -160,6 +175,21 @@ def sync_clone(plugin, sha):
 
 # --- main ----------------------------------------------------------------------------------------
 
+def set_attention(plugin, note):
+    """Leave a note Overlay Doctor reads out at login; None clears this plugin's note."""
+    try:
+        existing = open(ATTENTION).read() if os.path.exists(ATTENTION) else ""
+        text = attention_lines(existing, plugin, note)
+        os.makedirs(os.path.dirname(ATTENTION), exist_ok=True)
+        if text:
+            with open(ATTENTION, "w") as f:
+                f.write(text)
+        elif os.path.exists(ATTENTION):
+            os.remove(ATTENTION)
+    except OSError as ex:
+        log(f"attention file: {ex}")
+
+
 def load_state():
     try:
         return json.load(open(STATE))
@@ -181,14 +211,16 @@ def sync_one(plugin, state):
     if pending:
         return finish_install(plugin, st, pending)
     head = upstream_head(plugin)
-    if not needs_sync(st, head):
+    if not needs_sync(st, head, local_api_level()):
         return
+    st.pop("failed_api_level", None)
     log(f"{name}: upstream {plugin['upstream']} moved to {head[:7]}; running the fork's workflow")
     conclusion, run_id = dispatch_and_wait(plugin)
     if conclusion != "success":
         st["failed_upstream"] = head
         log(f"{name}: workflow run {run_id} ended with {conclusion}; the branch was left alone")
         notify(f"{name}: upstream sync needs a hand", f"The rebase or build failed (run {run_id}).")
+        set_attention(name, f"upstream sync needs a hand (workflow run {run_id} {conclusion})")
         return
     dest = tempfile.mkdtemp(prefix=f"{name}-")
     download_artifact(plugin, run_id, dest)
@@ -198,12 +230,15 @@ def sync_one(plugin, state):
         st["failed_upstream"] = head
         log(f"{name}: artifact hash mismatch on {bad}; not installed")
         notify(f"{name}: build rejected", "Downloaded files did not match their hash list.")
+        set_attention(name, "a downloaded build failed its hash check and was not installed")
         return
     level, local = artifact_api_level(dest, plugin["manifest"]), local_api_level()
     if not api_level_compatible(level, local):
         st["failed_upstream"] = head
+        st["failed_api_level"] = local
         log(f"{name}: build targets Dalamud API {level}, this Mac runs {local}; not installed")
         notify(f"{name}: build not installed", f"Built for Dalamud API {level}; this Mac runs {local}.")
+        set_attention(name, f"an upstream build for Dalamud API {level} is waiting; this Mac runs API {local}")
         return
     st["pending_install"] = {"dest": dest, "upstream": head, "sha": open(os.path.join(dest, "COMMIT")).read().strip()}
     return finish_install(plugin, st, st["pending_install"])
@@ -221,6 +256,8 @@ def finish_install(plugin, st, pending):
     st["installed_sha"] = pending["sha"]
     st.pop("pending_install", None)
     st.pop("failed_upstream", None)
+    st.pop("failed_api_level", None)
+    set_attention(name, None)
     log(f"{name}: installed build {pending['sha'][:7]} (upstream {pending['upstream'][:7]}); {note}")
     notify(f"{name} updated", f"Rebased on upstream {pending['upstream'][:7]}; loads at the next launch. {note}.")
 

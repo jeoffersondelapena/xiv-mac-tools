@@ -16,6 +16,24 @@ class WhenToSync(unittest.TestCase):
         self.assertFalse(us.needs_sync({"synced_upstream": "aaa"}, "aaa"))
         self.assertFalse(us.needs_sync({"failed_upstream": "bbb"}, "bbb"))
 
+    def test_an_api_mismatch_is_retried_once_this_macs_dalamud_changed(self):
+        state = {"failed_upstream": "bbb", "failed_api_level": 15}
+        self.assertFalse(us.needs_sync(state, "bbb", local_api_level=15))
+        self.assertTrue(us.needs_sync(state, "bbb", local_api_level=16))
+
+
+class AttentionNotes(unittest.TestCase):
+    def test_each_plugin_keeps_one_line(self):
+        text = us.attention_lines("", "IINACT", "needs a hand")
+        text = us.attention_lines(text, "Browsingway", "build waiting")
+        text = us.attention_lines(text, "IINACT", "still needs a hand")
+        self.assertEqual("Browsingway: build waiting\nIINACT: still needs a hand\n", text)
+
+    def test_clearing_removes_only_that_plugin(self):
+        text = "IINACT: a\nBrowsingway: b\n"
+        self.assertEqual("Browsingway: b\n", us.attention_lines(text, "IINACT", None))
+        self.assertEqual("", us.attention_lines("IINACT: a\n", "IINACT", None))
+
 
 class Artifacts(unittest.TestCase):
     def test_artifact_names_carry_the_plugin_and_commit(self):
