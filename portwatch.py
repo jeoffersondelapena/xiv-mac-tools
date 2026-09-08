@@ -154,8 +154,15 @@ def sample_games():
 # IINACT's network log is the one place a parser stall shows while the game runs: chat lines are
 # fed straight from Dalamud's chat hook and keep coming, while everything the parser produces
 # (ability lines, combatant-memory lines) stops. Combat chat with no parser lines is that stall.
-NETLOG_DIR = os.path.join(BASE, "wineprefix", "drive_c", "users",
-                          os.path.basename(os.path.expanduser("~")), "Documents", "IINACT")
+# The log goes where IINACT's config says, by default Documents\IINACT, which Wine links to the
+# real ~/Documents: a folder macOS gates behind a Files and Folders consent that apps get asked
+# for and a launchd agent never does, so listing it fails there, quietly.
+HOME = os.path.expanduser("~")
+WINEPREFIX = os.path.join(BASE, "wineprefix")
+IINACT_CONFIG = os.path.join(CFG, "IINACT.json")
+DEFAULT_NETLOG_WIN = "C:\\users\\" + os.path.basename(HOME) + "\\Documents\\IINACT"
+NETLOG_HOME = os.path.join(BASE, "iinact-logs")
+GATED_FOLDERS = ("Desktop", "Documents", "Downloads")
 STALL_LOG = os.path.join(BASE, "wedge-watch", "iinact-stalls.log")
 COMBAT_CHAT = set(range(0x29, 0x34))   # damage, actions, healing, effects gained and lost
 PARSER_TYPES = {"21", "22", "261"}
@@ -182,6 +189,72 @@ def stall_verdict(combat_chat, parser_lines):
     return combat_chat >= STALL_MIN_CHAT and parser_lines == 0
 
 
+def wine_to_mac_path(win_path, prefix=WINEPREFIX):
+    """Mac path behind a Wine one: C: is the prefix's drive_c, any other letter is whatever its
+    dosdevices link points at; None for an unknown drive or spelling."""
+    m = re.match(r"^([A-Za-z]):[\\/]?(.*)$", win_path or "")
+    if not m:
+        return None
+    letter, rest = m.group(1).lower(), m.group(2).replace("\\", "/")
+    root = os.path.join(prefix, "drive_c" if letter == "c" else os.path.join("dosdevices", letter + ":"))
+    if not os.path.exists(root):
+        return None
+    return os.path.normpath(os.path.join(os.path.realpath(root), rest))
+
+
+def mac_to_wine_path(mac_path, prefix=WINEPREFIX):
+    """Wine spelling of a Mac path: under drive_c as C:, anywhere else through Z:, Wine's root drive."""
+    real = os.path.realpath(mac_path)
+    drive_c = os.path.realpath(os.path.join(prefix, "drive_c"))
+    if real == drive_c or real.startswith(drive_c + os.sep):
+        return "C:\\" + real[len(drive_c) + 1:].replace("/", "\\")
+    return "Z:" + real.replace("/", "\\")
+
+
+def netlog_setting(config_path=IINACT_CONFIG):
+    """The folder IINACT is set to log into (Wine spelling), or its default when unset or unreadable."""
+    try:
+        with open(config_path) as f:
+            path = json.load(f).get("LogFilePath")
+    except (OSError, ValueError, AttributeError):
+        path = None
+    return path or DEFAULT_NETLOG_WIN
+
+
+def netlog_dir(config_path=IINACT_CONFIG, prefix=WINEPREFIX):
+    return wine_to_mac_path(netlog_setting(config_path), prefix) or wine_to_mac_path(DEFAULT_NETLOG_WIN, prefix)
+
+
+def in_gated_folder(path, home=HOME):
+    """Whether reading `path` needs the Files and Folders consent macOS asks apps for (Desktop,
+    Documents, Downloads); symlinks are followed because Wine's Documents is one."""
+    real, home = os.path.realpath(path), os.path.realpath(home)
+    return any(real == os.path.join(home, n) or real.startswith(os.path.join(home, n) + os.sep)
+               for n in GATED_FOLDERS)
+
+
+def relocate_netlog(config_path, new_dir, games, prefix=WINEPREFIX, say=None):
+    """Points IINACT's log folder at `new_dir` while no game runs, creating the folder first:
+    IINACT falls back to Documents when the configured folder does not exist."""
+    say = say or log
+    if games:
+        return False
+    try:
+        os.makedirs(new_dir, exist_ok=True)
+        with open(config_path) as f:
+            cfg = json.load(f)
+        cfg["LogFilePath"] = mac_to_wine_path(new_dir, prefix)
+        tmp = config_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, config_path)
+    except (OSError, ValueError, AttributeError, TypeError) as e:
+        say(f"could not move IINACT's network log: {e}")
+        return False
+    say(f"IINACT network log moved to {new_dir}; earlier logs stay where they were")
+    return True
+
+
 class NetLogTail:
     """Yields new lines of the newest IINACT network log, starting from its current end."""
 
@@ -189,13 +262,19 @@ class NetLogTail:
         self.directory = directory
         self.path = None
         self.offset = 0
+        self.denied = False   # the last listing was refused, as opposed to finding nothing
 
     def newest(self):
         try:
-            files = [os.path.join(self.directory, n) for n in os.listdir(self.directory)
-                     if n.startswith("Network_") and n.endswith(".log")]
-        except OSError:
+            names = os.listdir(self.directory) if self.directory else []
+        except PermissionError:
+            self.denied = True
             return None
+        except OSError:
+            names = []
+        self.denied = False
+        files = [os.path.join(self.directory, n) for n in names
+                 if n.startswith("Network_") and n.endswith(".log")]
         return max(files, key=os.path.getmtime) if files else None
 
     def read_new(self):
@@ -225,11 +304,15 @@ class NetLogTail:
 class StallWatch:
     """Keeps a one-minute window of network-log line kinds and samples the game once per stall."""
 
-    def __init__(self, directory=NETLOG_DIR):
-        self.tail = NetLogTail(directory)
+    def __init__(self, directory=None, config_path=IINACT_CONFIG, new_home=NETLOG_HOME, home=HOME):
+        self.config_path = config_path
+        self.new_home = new_home
+        self.home = home
+        self.tail = NetLogTail(directory or netlog_dir(config_path))
         self.recent = []          # (arrival time, kind, chat code)
         self.stalled = False
         self.last_sample = 0
+        self.denied_noted = False
 
     def counts(self, now):
         self.recent = [r for r in self.recent if now - r[0] <= STALL_WINDOW]
@@ -238,7 +321,13 @@ class StallWatch:
         return chat, parser
 
     def tick(self, now, games):
-        for line in self.tail.read_new():
+        lines = self.tail.read_new()
+        if self.tail.denied:
+            self.on_denied(games)
+        elif self.denied_noted:
+            log("IINACT network log readable again")
+            self.denied_noted = False
+        for line in lines:
             kind = classify_netlog_line(line)
             if kind:
                 self.recent.append((now, kind[0], kind[1]))
@@ -249,6 +338,21 @@ class StallWatch:
         elif self.stalled and parser > 0:
             log("IINACT parser lines resumed")
         self.stalled = stalled
+
+    def on_denied(self, games):
+        """No consent prompt ever reaches a launchd agent, so the cures are moving the log out of the
+        gated folder, done here once no game runs because IINACT writes its config back from memory,
+        or a grant made by hand."""
+        gated = in_gated_folder(self.tail.directory, self.home)
+        if not self.denied_noted:
+            cure = ("it moves out of there (automatic once no game runs) or Python is allowed into that "
+                    "folder under System Settings > Privacy & Security > Files and Folders"
+                    if gated else "its permissions let this user read it")
+            log(f"IINACT network log unreadable at {self.tail.directory}; the stall detector is blind until {cure}")
+            self.denied_noted = True
+        if gated and relocate_netlog(self.config_path, self.new_home, games):
+            self.tail = NetLogTail(self.new_home)
+            self.denied_noted = False
 
     def on_stall(self, now, games, chat):
         msg = f"IINACT STALL: {chat} combat chat lines in {STALL_WINDOW}s but no parser lines"
@@ -868,6 +972,10 @@ def status():
 
     if not launch and not stale:
         print("\nSAFE - launch the next window whenever you like.")
+
+    where = netlog_dir()
+    gated = " - inside a folder launchd agents cannot read; the watcher moves it once no game runs" if where and in_gated_folder(where) else ""
+    print(f"network log: {where or 'no wineprefix found'}{gated}")
 
     for line in restart_path_report():
         print(line)

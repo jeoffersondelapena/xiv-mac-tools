@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests for portwatch's port-arming policy. Run: python3 test_portwatch.py"""
-import datetime, importlib.util, os, sys, unittest
+import datetime, importlib.util, json, os, shutil, sys, tempfile, unittest
 
 spec = importlib.util.spec_from_file_location("pw", os.path.join(os.path.dirname(os.path.abspath(__file__)), "portwatch.py"))
 pw = importlib.util.module_from_spec(spec)
@@ -332,6 +332,132 @@ class NetLogTailing(unittest.TestCase):
             f.write("21|t|a|b\n")
         watch.tick(1008.0, games=[])
         self.assertFalse(watch.stalled)
+
+
+class WinePaths(unittest.TestCase):
+    def setUp(self):
+        self.prefix = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.prefix, "drive_c", "users", "u"))
+        os.makedirs(os.path.join(self.prefix, "dosdevices"))
+        os.symlink("/", os.path.join(self.prefix, "dosdevices", "z:"))
+
+    def tearDown(self):
+        shutil.rmtree(self.prefix)
+
+    def test_c_is_the_prefix_and_z_is_the_mac_root(self):
+        want = os.path.join(os.path.realpath(self.prefix), "drive_c", "users", "u", "Documents", "IINACT")
+        self.assertEqual(want, pw.wine_to_mac_path("C:\\users\\u\\Documents\\IINACT", self.prefix))
+        self.assertEqual(want, pw.wine_to_mac_path("c:/users/u/Documents/IINACT", self.prefix))
+        self.assertEqual("/Users/u/Library/x", pw.wine_to_mac_path("Z:\\Users\\u\\Library\\x", self.prefix))
+
+    def test_unknown_drives_and_spellings_resolve_to_nothing(self):
+        self.assertIsNone(pw.wine_to_mac_path("Q:\\foo", self.prefix))
+        self.assertIsNone(pw.wine_to_mac_path("not a path", self.prefix))
+        self.assertIsNone(pw.wine_to_mac_path(None, self.prefix))
+
+    def test_mac_paths_spell_back_through_the_right_drive(self):
+        self.assertEqual("C:\\users\\u", pw.mac_to_wine_path(os.path.join(self.prefix, "drive_c", "users", "u"), self.prefix))
+        self.assertEqual("Z:\\Users\\u\\Library\\x", pw.mac_to_wine_path("/Users/u/Library/x", self.prefix))
+
+
+class NetlogLocation(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.cfg = os.path.join(self.dir, "IINACT.json")
+        self.home = os.path.join(self.dir, "home")
+        os.makedirs(os.path.join(self.home, "Documents", "IINACT"))
+        os.makedirs(os.path.join(self.home, "Library"))
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def test_the_configured_folder_wins_and_the_default_covers_the_rest(self):
+        with open(self.cfg, "w") as f:
+            json.dump({"LogFilePath": "C:\\users\\u\\AppData\\IINACT", "WriteLogFile": True}, f)
+        self.assertEqual("C:\\users\\u\\AppData\\IINACT", pw.netlog_setting(self.cfg))
+        with open(self.cfg, "w") as f:
+            json.dump({"WriteLogFile": True}, f)
+        self.assertEqual(pw.DEFAULT_NETLOG_WIN, pw.netlog_setting(self.cfg))
+        with open(self.cfg, "w") as f:
+            f.write("{not json")
+        self.assertEqual(pw.DEFAULT_NETLOG_WIN, pw.netlog_setting(self.cfg))
+        self.assertEqual(pw.DEFAULT_NETLOG_WIN, pw.netlog_setting(os.path.join(self.dir, "missing.json")))
+
+    def test_gated_folders_are_recognised_through_symlinks(self):
+        self.assertTrue(pw.in_gated_folder(os.path.join(self.home, "Documents", "IINACT"), self.home))
+        self.assertTrue(pw.in_gated_folder(os.path.join(self.home, "Downloads"), self.home))
+        self.assertFalse(pw.in_gated_folder(os.path.join(self.home, "Library", "logs"), self.home))
+        link = os.path.join(self.dir, "wine-documents")
+        os.symlink(os.path.join(self.home, "Documents"), link)
+        self.assertTrue(pw.in_gated_folder(os.path.join(link, "IINACT"), self.home))
+
+
+class NetlogRelocation(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.home = os.path.join(self.dir, "home")
+        self.docs = os.path.join(self.home, "Documents", "IINACT")
+        os.makedirs(self.docs)
+        self.cfg = os.path.join(self.dir, "IINACT.json")
+        with open(self.cfg, "w") as f:
+            json.dump({"LogFilePath": "C:\\users\\u\\Documents\\IINACT", "WriteLogFile": True}, f)
+        self.new = os.path.join(self.home, "Library", "Application Support", "XIV on Mac", "iinact-logs")
+        self.game = [(1, 0.0, 0.0, "C:\\game\\ffxiv_dx11.exe")]
+        self.said = []
+        self._log, pw.log = pw.log, self.said.append
+
+    def tearDown(self):
+        pw.log = self._log
+        os.chmod(self.docs, 0o700)
+        shutil.rmtree(self.dir)
+
+    def setting(self):
+        with open(self.cfg) as f:
+            return json.load(f)["LogFilePath"]
+
+    def test_nothing_moves_while_a_game_runs(self):
+        self.assertFalse(pw.relocate_netlog(self.cfg, self.new, self.game))
+        self.assertEqual("C:\\users\\u\\Documents\\IINACT", self.setting())
+        self.assertFalse(os.path.isdir(self.new))
+
+    def test_the_move_creates_the_folder_and_keeps_the_rest_of_the_config(self):
+        self.assertTrue(pw.relocate_netlog(self.cfg, self.new, []))
+        with open(self.cfg) as f:
+            cfg = json.load(f)
+        self.assertEqual(pw.mac_to_wine_path(self.new), cfg["LogFilePath"])
+        self.assertTrue(cfg["LogFilePath"].startswith("Z:\\"))
+        self.assertTrue(cfg["WriteLogFile"])
+        self.assertTrue(os.path.isdir(self.new))
+
+    def test_a_missing_config_is_reported_not_raised(self):
+        self.assertFalse(pw.relocate_netlog(os.path.join(self.dir, "none.json"), self.new, []))
+        self.assertTrue(any("could not move" in s for s in self.said))
+
+    def test_a_refused_listing_is_told_apart_from_an_empty_folder(self):
+        tail = pw.NetLogTail(self.docs)
+        self.assertIsNone(tail.newest())
+        self.assertFalse(tail.denied)
+        os.chmod(self.docs, 0)
+        self.assertIsNone(tail.newest())
+        self.assertTrue(tail.denied)
+        os.chmod(self.docs, 0o700)
+        tail.newest()
+        self.assertFalse(tail.denied)
+
+    def test_the_watch_warns_once_then_moves_the_log_when_the_game_is_gone(self):
+        os.chmod(self.docs, 0)
+        watch = pw.StallWatch(self.docs, config_path=self.cfg, new_home=self.new, home=self.home)
+        watch.tick(1000.0, self.game)
+        watch.tick(1004.0, self.game)
+        self.assertEqual(1, sum("unreadable" in s for s in self.said))
+        self.assertIn("Files and Folders", self.said[0])
+        self.assertEqual("C:\\users\\u\\Documents\\IINACT", self.setting())
+        watch.tick(1008.0, [])
+        self.assertEqual(self.new, watch.tail.directory)
+        self.assertEqual(pw.mac_to_wine_path(self.new), self.setting())
+        self.assertTrue(any("moved to" in s for s in self.said))
+        watch.tick(1012.0, [])
+        self.assertEqual(1, sum("unreadable" in s for s in self.said))
 
 
 class HangDetection(unittest.TestCase):

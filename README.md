@@ -14,5 +14,7 @@ Watchers and one command that keep a two-client FFXIV setup on XIV on Mac honest
 | `test_portwatch.py`, `test_upstream_sync.py` | the suites; run before every commit |
 
 New machine: clone to the path above, run `./install.sh`. The overlay port rule (10500 + the Browsingway cache slot)
-is shared with the Browsingway fork; change it in both or not at all. Logs, samples and config backups are
-never committed.
+is shared with the Browsingway fork; change it in both or not at all. IINACT's network log is kept in
+`~/Library/Application Support/XIV on Mac/iinact-logs`, not in Documents: a launchd agent cannot read the
+folders macOS gates (Desktop, Documents, Downloads), so the watcher moves the log there the first time it
+finds it unreadable while no game runs. Logs, samples and config backups are never committed.
