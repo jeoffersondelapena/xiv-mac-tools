@@ -139,6 +139,29 @@ class WineserverVerdict(unittest.TestCase):
         self.assertIn("WINESERVER GONE", pw.server_verdict(2, False))
 
 
+class ProcessScan(unittest.TestCase):
+    LINE = "{pid} Tue Sep  8 18:52:49 2026  54.2 {cmd}"
+
+    def rows(self, *cmds):
+        listing = "\n".join(self.LINE.format(pid=100 + i, cmd=c) for i, c in enumerate(cmds))
+        return pw.parse_procs(listing, "ffxiv_dx11.exe")
+
+    def test_both_launch_shapes_are_the_game(self):
+        # With Dalamud the injector spawns the game by its Windows path; without it (patch day,
+        # 2026-09-08) XIV on Mac starts it by its Unix path, spaces and all.
+        rows = self.rows("C:\\Program Files\\game\\ffxiv_dx11.exe DEV.DataPathType=1",
+                         "/Users/x/Library/Application Support/XIV on Mac/ffxiv/game/ffxiv_dx11.exe //**token")
+        self.assertEqual([100, 101], [r[0] for r in rows])
+        self.assertEqual(datetime.datetime(2026, 9, 8, 18, 52, 49).timestamp(), rows[0][1])
+        self.assertEqual(54.2, rows[1][2])
+
+    def test_processes_that_merely_mention_the_game_are_not_it(self):
+        rows = self.rows("C:\\d\\DalamudCrashHandler.exe --game C:\\game\\ffxiv_dx11.exe",
+                         "/bin/sh -c 'sample $(pgrep ffxiv_dx11.exe)'",
+                         "python3 /x/portwatch.py --watch ffxiv_dx11.exe")
+        self.assertEqual([], rows)
+
+
 class DalamudOffBoots(unittest.TestCase):
     def test_tracked_normally_when_dalamud_is_on(self):
         self.assertEqual(pw.initial_state(True), "pending")

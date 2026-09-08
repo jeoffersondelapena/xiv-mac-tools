@@ -21,9 +21,10 @@ SLOT_PREFIX = "cef-cache"
 # localStorage, which is per CEF profile, so only the meter drifts between windows.
 DRIFTING_OVERLAY = "DPS"
 
-# A Wine command line starts with a drive-letter path; anything else merely quoting an .exe name
-# (a shell running a script that mentions one, say) must not be mistaken for the process itself.
-WINE_CMD_RE = re.compile(r'^[A-Za-z]:\\.*?\.exe(?=\s|$)')
+# A Wine command line starts with the executable's path: drive-letter style when the Dalamud
+# injector spawns the game, plain Unix style when XIV on Mac starts it bare. Anything else merely
+# quoting an .exe name (a shell running a script that mentions one, say) is not the process.
+WINE_CMD_RE = re.compile(r'^(?:[A-Za-z]:\\|/).*?\.exe(?=\s|$)')
 PS_RE = re.compile(r'^\s*(\d+)\s+(\w{3} \w{3}\s+\d+ \d{2}:\d{2}:\d{2} \d{4})\s+([\d.]+)\s+(.*)$')
 
 
@@ -140,8 +141,14 @@ def boot_note(msg):
 
 
 def procs(exe):
-    """(pid, start epoch, %cpu, command) for Wine processes whose executable is `exe`."""
+    """Live Wine processes whose executable is `exe`, as parse_procs rows."""
     out = subprocess.run(["ps", "-Ao", "pid=,lstart=,%cpu=,command="], capture_output=True, text=True).stdout
+    return parse_procs(out, exe)
+
+
+def parse_procs(out, exe):
+    """(pid, start epoch, %cpu, command) rows of a `ps -Ao pid=,lstart=,%cpu=,command=` listing
+    whose executable is `exe`, oldest first."""
     found = []
     for line in out.splitlines():
         m = PS_RE.match(line)
@@ -149,7 +156,7 @@ def procs(exe):
             continue
         pid, when, cpu, cmd = m.groups()
         exe_match = WINE_CMD_RE.match(cmd)
-        if not exe_match or not exe_match.group(0).endswith("\\" + exe):
+        if not exe_match or not exe_match.group(0).endswith(("\\" + exe, "/" + exe)):
             continue
         try:
             started = datetime.datetime.strptime(when, "%a %b %d %H:%M:%S %Y").timestamp()
@@ -983,9 +990,12 @@ def status():
 
     if not live:
         print("no game windows running")
+    mismatch = dalamud_mismatch(dalamud_supported_game(), game_version())
     for n, pid in enumerate(live, 1):
         if pid in port_of:
             print(f"window {n} (pid {pid}): listening on {port_of[pid]}")
+        elif mismatch:
+            print(f"window {n} (pid {pid}): running without plugins")
         else:
             up = int(time.time() - starts.get(pid, time.time()))
             print(f"window {n} (pid {pid}): still loading ({up}s since launch), has not claimed a port yet")
@@ -1006,7 +1016,6 @@ def status():
     where = netlog_dir()
     gated = " - inside a folder launchd agents cannot read; the watcher moves it once no game runs" if where and in_gated_folder(where) else ""
     print(f"network log: {where or 'no wineprefix found'}{gated}")
-    mismatch = dalamud_mismatch(dalamud_supported_game(), game_version())
     if mismatch:
         print(f"{mismatch} - XIV on Mac starts the game without plugins until Dalamud updates")
 
