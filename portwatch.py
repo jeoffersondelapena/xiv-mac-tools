@@ -69,8 +69,38 @@ def iinact_enabled_in(cfg, repo_installed):
     return False
 
 
-def initial_state(dalamud_on, iinact_on=True):
-    return "pending" if dalamud_on and iinact_on else "untracked"
+def game_version():
+    try:
+        with open(os.path.join(BASE, "ffxiv", "game", "ffxivgame.ver")) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def dalamud_supported_game(hooks=None):
+    """(assembly version, game version it was built for) of the newest Dalamud XIV on Mac holds."""
+    hooks = hooks or os.path.join(BASE, "dalamud", "Hooks")
+    try:
+        files = [p for p in (os.path.join(hooks, n, "version.json") for n in os.listdir(hooks)) if os.path.isfile(p)]
+        if not files:
+            return None
+        with open(max(files, key=os.path.getmtime)) as f:
+            info = json.load(f)
+        return info.get("assemblyVersion"), info.get("supportedGameVer")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def dalamud_mismatch(installed, game):
+    """Why no plugin will load: XIV on Mac refuses to inject a Dalamud built for another game
+    version and starts the game bare, so no port binds and a normal boot looks wedged."""
+    if not installed or not game or not installed[1] or installed[1] == game:
+        return None
+    return f"Dalamud {installed[0]} supports game {installed[1]}, the game is {game}"
+
+
+def initial_state(dalamud_on, iinact_on=True, mismatch=None):
+    return "pending" if dalamud_on and iinact_on and not mismatch else "untracked"
 
 
 def classify_live(state, bound, age):
@@ -976,6 +1006,9 @@ def status():
     where = netlog_dir()
     gated = " - inside a folder launchd agents cannot read; the watcher moves it once no game runs" if where and in_gated_folder(where) else ""
     print(f"network log: {where or 'no wineprefix found'}{gated}")
+    mismatch = dalamud_mismatch(dalamud_supported_game(), game_version())
+    if mismatch:
+        print(f"{mismatch} - XIV on Mac starts the game without plugins until Dalamud updates")
 
     for line in restart_path_report():
         print(line)
@@ -1040,9 +1073,10 @@ def watch():
             last_age[pid] = age
             if pid not in seen:
                 dalamud_on, iinact_on = dalamud_enabled(), iinact_set_to_load()
-                seen[pid] = initial_state(dalamud_on, iinact_on)
+                mismatch = dalamud_mismatch(dalamud_supported_game(), game_version())
+                seen[pid] = initial_state(dalamud_on, iinact_on, mismatch)
                 if seen[pid] == "untracked":
-                    why = "Dalamud is off" if not dalamud_on else "IINACT is not set to load"
+                    why = "Dalamud is off" if not dalamud_on else mismatch or "IINACT is not set to load"
                     boot_note(f"pid {pid}: {why}; boot not tracked (no port will bind)")
             seen[pid], msg = classify_live(seen[pid], bound, age)
             if msg:

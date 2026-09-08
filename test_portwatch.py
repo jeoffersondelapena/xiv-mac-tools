@@ -153,6 +153,30 @@ class DalamudOffBoots(unittest.TestCase):
         # 2026-09-05 20:21: the fork was registered but disabled in the profile; the boot was filed as wedged.
         self.assertEqual(pw.initial_state(True, iinact_on=False), "untracked")
 
+    def test_not_tracked_when_dalamud_predates_the_game_patch(self):
+        # 2026-09-08 18:49: patch 7.56 took the game to 2026.09.01 while every Dalamud track still
+        # supported 2026.08.11, and XIV on Mac started the game bare.
+        why = pw.dalamud_mismatch(("15.0.3.2", "2026.08.11.0000.0000"), "2026.09.01.0000.0000")
+        self.assertEqual("Dalamud 15.0.3.2 supports game 2026.08.11.0000.0000, the game is 2026.09.01.0000.0000", why)
+        self.assertEqual(pw.initial_state(True, iinact_on=True, mismatch=why), "untracked")
+        self.assertIsNone(pw.dalamud_mismatch(("15.0.3.2", "2026.09.01.0000.0000"), "2026.09.01.0000.0000"))
+        self.assertIsNone(pw.dalamud_mismatch(None, "2026.09.01.0000.0000"))
+        self.assertIsNone(pw.dalamud_mismatch(("15.0.3.2", "2026.08.11.0000.0000"), None))
+
+    def test_the_newest_installed_dalamud_is_the_one_compared(self):
+        hooks = tempfile.mkdtemp()
+        try:
+            for name, game, mtime in (("15.0.3.2", "2026.08.11.0000.0000", 800), ("15.0.3.3", "2026.09.01.0000.0000", 900)):
+                os.makedirs(os.path.join(hooks, name))
+                path = os.path.join(hooks, name, "version.json")
+                with open(path, "w") as f:
+                    json.dump({"assemblyVersion": name, "supportedGameVer": game}, f)
+                os.utime(path, (mtime, mtime))
+            self.assertEqual(("15.0.3.3", "2026.09.01.0000.0000"), pw.dalamud_supported_game(hooks))
+            self.assertIsNone(pw.dalamud_supported_game(os.path.join(hooks, "missing")))
+        finally:
+            shutil.rmtree(hooks)
+
     def cfg(self, enabled_location=True, enabled_profile=True, plugin_id="abc"):
         path = "Z:\\Users\\x\\Projects\\iinact-fork\\IINACT\\bin\\Release\\win-x64\\IINACT.dll"
         return {
