@@ -23,6 +23,9 @@ PLUGINS = [
     {"name": "Browsingway", "fork": "jeoffersondelapena/Browsingway", "upstream": "Styr1x/Browsingway", "upstream_branch": "main",
      "clone": os.path.expanduser("~/Projects/browsingway-fork"), "branch": "macos",
      "install_dir": os.path.expanduser("~/Projects/browsingway-fork/out"), "manifest": "Browsingway.json"},
+    {"name": "GatherBuddyReborn", "fork": "jeoffersondelapena/GatherBuddyReborn", "upstream": "FFXIV-CombatReborn/GatherBuddyReborn", "upstream_branch": "main",
+     "clone": os.path.expanduser("~/Projects/gbr-fork"), "branch": "patches",
+     "install_dir": os.path.expanduser("~/Projects/gbr-fork/GatherBuddy/bin/Release"), "manifest": "GatherBuddyReborn.json"},
 ]
 
 
