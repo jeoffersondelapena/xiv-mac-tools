@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests for the upstream sync decisions. Run: python3 -m unittest test_upstream_sync"""
-import hashlib, importlib.util, os, unittest
+import datetime, hashlib, importlib.util, os, tempfile, unittest
 
 spec = importlib.util.spec_from_file_location("us", os.path.join(os.path.dirname(os.path.abspath(__file__)), "upstream_sync.py"))
 us = importlib.util.module_from_spec(spec)
@@ -75,6 +75,80 @@ class CloneSafety(unittest.TestCase):
     def test_local_work_blocks_the_reset(self):
         self.assertFalse(us.clone_is_clean(" M portwatch.py\n", 0))
         self.assertFalse(us.clone_is_clean("", 2))
+
+
+class LogSnapshots(unittest.TestCase):
+    T0 = datetime.datetime(2026, 9, 28, 16, 0, 0).timestamp()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.logs = os.path.join(self.tmp.name, "logs")
+        self.archive = os.path.join(self.tmp.name, "archive")
+        os.makedirs(self.logs)
+        self.state = {}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, name, text, mtime):
+        path = os.path.join(self.logs, name)
+        with open(path, "w") as f:
+            f.write(text)
+        os.utime(path, (mtime, mtime))
+
+    def snap(self, running=False):
+        return us.snapshot_logs(self.state, running=lambda: running, log_dir=self.logs, archive=self.archive, keep=3)
+
+    def archived(self):
+        return sorted(os.listdir(self.archive)) if os.path.isdir(self.archive) else []
+
+    def test_a_new_log_is_copied_and_named_by_its_last_write(self):
+        self.write("dalamud.log", "line 1\n", self.T0)
+        self.assertEqual(["dalamud-20260928-160000.log"], self.snap())
+        with open(os.path.join(self.archive, "dalamud-20260928-160000.log")) as f:
+            self.assertEqual("line 1\n", f.read())
+
+    def test_an_unchanged_log_is_not_copied_twice(self):
+        self.write("dalamud.log", "line 1\n", self.T0)
+        self.snap()
+        self.assertEqual([], self.snap())
+        self.assertEqual(1, len(self.archived()))
+
+    def test_a_grown_log_is_copied_again(self):
+        self.write("dalamud.log", "line 1\n", self.T0)
+        self.snap()
+        self.write("dalamud.log", "line 1\nline 2\n", self.T0 + 3600)
+        self.assertEqual(["dalamud-20260928-170000.log"], self.snap())
+        self.assertEqual(2, len(self.archived()))
+
+    def test_the_rolled_over_copy_of_a_known_session_is_skipped(self):
+        self.write("dalamud.log", "session A\n", self.T0)
+        self.snap()
+        # a relaunch moved the same bytes into .old.log and started a fresh .log
+        self.write("dalamud.old.log", "session A\n", self.T0 + 60)
+        self.write("dalamud.log", "session B\n", self.T0 + 120)
+        self.assertEqual(["dalamud-20260928-160200.log"], self.snap())
+
+    def test_an_old_log_with_unseen_content_is_kept_with_a_marker(self):
+        self.write("dalamud.old.log", "older session\n", self.T0)
+        self.assertEqual(["dalamud-20260928-160000-old.log"], self.snap())
+
+    def test_nothing_happens_while_the_game_runs(self):
+        self.write("dalamud.log", "live\n", self.T0)
+        self.assertEqual([], self.snap(running=True))
+        self.assertEqual([], self.archived())
+        self.assertEqual({}, self.state)
+
+    def test_only_the_newest_copies_are_kept(self):
+        for i in range(5):
+            self.write("dalamud.log", f"session {i}\n", self.T0 + i * 3600)
+            self.snap()
+        self.assertEqual(["dalamud-20260928-180000.log", "dalamud-20260928-190000.log", "dalamud-20260928-200000.log"],
+                         self.archived())
+
+    def test_snapshot_names(self):
+        self.assertEqual("dalamud-20260928-160000.log", us.snapshot_name("dalamud.log", self.T0))
+        self.assertEqual("dalamud-20260928-160000-old.log", us.snapshot_name("dalamud.old.log", self.T0))
 
 
 if __name__ == "__main__":

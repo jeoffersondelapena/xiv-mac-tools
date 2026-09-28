@@ -10,7 +10,7 @@ Watchers and one command that keep a two-client FFXIV setup on XIV on Mac honest
 | `netwatch.py` (launchd `xivnetwatch`) | captures the in-game HTTP failures with thread samples |
 | `bin/xivport` | `xivport`, `clean`, `sync`, `sample` |
 | `swap_iinact.py`, `register_dev_plugin.py` | install a locally built plugin as a Dalamud dev plugin |
-| `upstream_sync.py` (launchd `xivupstream`, hourly) | when a plugin's upstream moves, runs the fork's `upstream-sync` workflow on GitHub, then downloads the build it published, checks its hashes and Dalamud API level, installs it while no game runs, and fast-forwards the local clone |
+| `upstream_sync.py` (launchd `xivupstream`, hourly) | when a plugin's upstream moves, runs the fork's `upstream-sync` workflow on GitHub, then downloads the build it published, checks its hashes and Dalamud API level, installs it while no game runs, and fast-forwards the local clone; the same tick copies `dalamud.log` / `dalamud.old.log` into `log-archive/` while no game runs (one copy per session, newest 30 kept), since Dalamud keeps only one session back and only its first 10 MB |
 | `test_portwatch.py`, `test_upstream_sync.py` | the suites; run before every commit |
 
 New machine: clone to the path above, run `./install.sh`. The overlay port rule (10500 + the Browsingway cache slot)

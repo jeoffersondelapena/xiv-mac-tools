@@ -5,14 +5,21 @@ Once an hour (launchd): if an upstream's default branch moved since the last syn
 workflow, wait for it, then download the build it published, check the hash list, install it into the
 dev-plugin folder (only while no game window runs), and fast-forward the local clone. A failed run, a
 dirty clone or a Dalamud API mismatch is reported and left alone.
+
+The same tick also copies Dalamud's log files aside while no game runs: Dalamud keeps one session back
+and only its first 10 MB, so a relaunch before a log was read loses lines.
 """
-import datetime, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
+import datetime, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
 
 BASE = os.path.expanduser("~/Library/Application Support/XIV on Mac")
 STATE = os.path.join(BASE, "wedge-watch", "upstream-sync-state.json")
 ATTENTION = os.path.join(BASE, "pluginConfigs", "OverlayDoctor", "attention.txt")
 LOG = os.path.join(BASE, "wedge-watch", "upstream-sync.log")
 WORKFLOW = "upstream-sync.yml"
+LOG_DIR = os.path.join(BASE, "logs")
+LOG_ARCHIVE = os.path.join(BASE, "wedge-watch", "log-archive")
+LOG_ARCHIVE_KEEP = 30
+LOG_SOURCES = ("dalamud.log", "dalamud.old.log")
 RUN_TIMEOUT = 25 * 60
 WINE_CMD_RE = re.compile(r"^[A-Za-z]:\\.*?\.exe(?=\s|$)")
 
@@ -199,6 +206,55 @@ def set_attention(plugin, note):
         log(f"attention file: {ex}")
 
 
+def snapshot_name(source, mtime):
+    """dalamud-<last write>.log; -old marks the file Dalamud rolled over at a launch."""
+    stamp = datetime.datetime.fromtimestamp(mtime).strftime("%Y%m%d-%H%M%S")
+    return f"dalamud-{stamp}{'-old' if source.endswith('.old.log') else ''}.log"
+
+
+def file_digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def prune_archive(archive, keep):
+    files = sorted((os.path.getmtime(p), p) for p in glob.glob(os.path.join(archive, "dalamud-*.log")))
+    for _, path in files[:max(0, len(files) - keep)]:
+        os.remove(path)
+
+
+def snapshot_logs(state, running=None, log_dir=LOG_DIR, archive=LOG_ARCHIVE, keep=LOG_ARCHIVE_KEEP):
+    """Copy each changed Dalamud log file into the archive while no game runs; returns the names written.
+    A rolled-over .old.log that repeats an earlier copy byte for byte is skipped."""
+    if (running or game_running)():
+        return []
+    st = state.setdefault("log_snapshots", {})
+    digests, seen = st.setdefault("digests", []), st.setdefault("seen", {})
+    written = []
+    for source in LOG_SOURCES:
+        path = os.path.join(log_dir, source)
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            continue
+        stat = os.stat(path)
+        if seen.get(source) == [stat.st_mtime, stat.st_size]:
+            continue
+        digest = file_digest(path)
+        if digest not in digests:
+            os.makedirs(archive, exist_ok=True)
+            name = snapshot_name(source, stat.st_mtime)
+            shutil.copy2(path, os.path.join(archive, name))
+            digests.append(digest)
+            del digests[:-2 * keep]
+            written.append(name)
+        seen[source] = [stat.st_mtime, stat.st_size]
+    if written:
+        prune_archive(archive, keep)
+    return written
+
+
 def load_state():
     try:
         return json.load(open(STATE))
@@ -277,6 +333,12 @@ def finish_install(plugin, st, pending):
 
 def main():
     state = load_state()
+    try:
+        for name in snapshot_logs(state):
+            log(f"dalamud log copied to log-archive/{name}")
+    except Exception as ex:
+        log(f"log snapshot: {type(ex).__name__}: {ex}")
+    save_state(state)
     for plugin in PLUGINS:
         try:
             sync_one(plugin, state)
