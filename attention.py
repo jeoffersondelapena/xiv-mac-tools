@@ -1,9 +1,9 @@
-"""The watchers' notes to the player: one line per source in Overlay Doctor's attention file, which the plugin
+"""The watchers' notes to the player: one line per source in XIV Doctor's attention file, which the plugin
 reads at login and repeats in chat while a note stands. Wording: "<source>: <what happened> at <time>; <capture>"."""
 import datetime, os
 
 BASE = os.path.expanduser("~/Library/Application Support/XIV on Mac")
-ATTENTION = os.path.join(BASE, "pluginConfigs", "OverlayDoctor", "attention.txt")
+ATTENTION = os.path.join(BASE, "pluginConfigs", "XIVDoctor", "attention.txt")
 
 
 def attention_lines(existing, source, note):
@@ -15,7 +15,7 @@ def attention_lines(existing, source, note):
 
 
 def set_attention(source, note, path=ATTENTION):
-    """Leave a note Overlay Doctor shows the player; None clears this source's note. Never raises."""
+    """Leave a note XIV Doctor shows the player; None clears this source's note. Never raises."""
     try:
         existing = ""
         if os.path.exists(path):
