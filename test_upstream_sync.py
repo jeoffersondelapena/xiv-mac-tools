@@ -211,5 +211,25 @@ class PatchAndWikiChores(unittest.TestCase):
         self.assertTrue(us.codex_refresh_due({"codex_refreshed": "2026-09-22T12:00:00"}, self.NOW))
 
 
+class AttentionNotes(unittest.TestCase):
+    def test_a_note_is_written_replaced_and_cleared_per_source(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("attention", os.path.join(os.path.dirname(os.path.abspath(__file__)), "attention.py"))
+        att = importlib.util.module_from_spec(spec); spec.loader.exec_module(att)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "attention.txt")
+            self.assertTrue(att.set_attention("Boot", "a boot wedged on a black screen at 10:02; capture wedge-sample-100200.txt", path))
+            self.assertTrue(att.set_attention("IINACT", "the parser stalled at 10:05", path))
+            self.assertTrue(att.set_attention("Boot", "a boot wedged on a black screen at 10:09", path))
+            with open(path) as f:
+                self.assertEqual(["IINACT: the parser stalled at 10:05", "Boot: a boot wedged on a black screen at 10:09"], f.read().splitlines())
+            att.set_attention("IINACT", None, path); att.set_attention("Boot", None, path)
+            self.assertFalse(os.path.exists(path))
+        when = datetime.datetime(2026, 9, 29, 10, 2)
+        self.assertEqual("a boot wedged on a black screen at 10:02; capture wedge-sample-100200.txt",
+                         att.event_note("a boot wedged on a black screen", "/x/wedge-sample-100200.txt", when))
+        self.assertEqual("the parser stalled at 10:02", att.event_note("the parser stalled", None, when))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

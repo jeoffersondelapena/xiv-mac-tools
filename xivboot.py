@@ -2,6 +2,8 @@
 """XIV on Mac boot monitor.  --watch: run forever, write one report per boot (and sample a stalled game);
 --last N: print the last N boot reports from the logs.  Reports go next to this script."""
 import os, re, sys, time, glob, subprocess, datetime
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from attention import set_attention, event_note  # noqa: E402
 BASE = os.path.expanduser("~/Library/Application Support/XIV on Mac")
 LOGS = os.path.join(BASE, "logs"); HERE = os.path.dirname(os.path.abspath(__file__))
 FIRST_FRAME_LIMIT, PLUGIN_LIMIT = 75, 150   # seconds after boot start before we call it stalled
@@ -117,6 +119,7 @@ def watch():
             if stalled and key not in sampled:
                 sampled.add(key); out = os.path.join(HERE, f"wedge-sample-{r['start'].strftime('%H%M%S')}.txt")
                 subprocess.run(["sample", pid, "8", "-file", out], capture_output=True)
+                set_attention("Boot", event_note("a boot wedged on a black screen", out))
                 open(os.path.join(HERE, f"boot-{r['start'].strftime('%H%M%S')}.txt"), "a").write(report(seg, live=True) + f"\n  STALL detected at +{int(age)}s; thread sample: {out}\n")
             done = (r["plugins_done"] or r["ended"] or crash_after(r["start"])) and not pid
             if (done or (r["plugins_done"] and age > 300)) and key not in seen:

@@ -16,10 +16,11 @@ week Codex's wiki data is rebuilt and handed to the plugin. When GatherBuddy Reb
 version, its settings policy is checked again and re-applied with the game closed.
 """
 import datetime, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from attention import ATTENTION, attention_lines, set_attention  # noqa: E402,F401
 
 BASE = os.path.expanduser("~/Library/Application Support/XIV on Mac")
 STATE = os.path.join(BASE, "wedge-watch", "upstream-sync-state.json")
-ATTENTION = os.path.join(BASE, "pluginConfigs", "OverlayDoctor", "attention.txt")
 LOG = os.path.join(BASE, "wedge-watch", "upstream-sync.log")
 WORKFLOW = "upstream-sync.yml"
 LOG_DIR = os.path.join(BASE, "logs")
@@ -99,14 +100,6 @@ def needs_sync(state, upstream_head, local_api_level=None, branch_head=None):
         failed_level = state.get("failed_api_level")
         return failed_level is not None and failed_level != local_api_level
     return True
-
-
-def attention_lines(existing, plugin, note):
-    """The attention file, one line per plugin: replace this plugin's line, drop it when note is None."""
-    kept = [l for l in existing.splitlines() if l.strip() and not l.startswith(plugin + ":")]
-    if note:
-        kept.append(f"{plugin}: {note}")
-    return "".join(l + "\n" for l in kept)
 
 
 def artifact_name(plugin, sha):
@@ -217,21 +210,6 @@ def sync_clone(plugin, sha):
 
 
 # --- main ----------------------------------------------------------------------------------------
-
-def set_attention(plugin, note):
-    """Leave a note Overlay Doctor reads out at login; None clears this plugin's note."""
-    try:
-        existing = open(ATTENTION).read() if os.path.exists(ATTENTION) else ""
-        text = attention_lines(existing, plugin, note)
-        os.makedirs(os.path.dirname(ATTENTION), exist_ok=True)
-        if text:
-            with open(ATTENTION, "w") as f:
-                f.write(text)
-        elif os.path.exists(ATTENTION):
-            os.remove(ATTENTION)
-    except OSError as ex:
-        log(f"attention file: {ex}")
-
 
 def snapshot_name(source, mtime):
     """dalamud-<last write>.log; -old marks the file Dalamud rolled over at a launch."""

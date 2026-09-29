@@ -7,6 +7,8 @@ and detects an IINACT parser stall from its network log. Ports are no longer arr
 window's Browsingway derives its port from its cache slot and IINACT in that window follows it.
 """
 import os, re, sys, json, time, base64, shutil, subprocess, datetime
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from attention import set_attention, event_note  # noqa: E402
 
 BASE = os.path.expanduser("~/Library/Application Support/XIV on Mac")
 CFG = os.path.join(BASE, "pluginConfigs")
@@ -408,6 +410,7 @@ class StallWatch:
         except OSError:
             pass
         notify("IINACT stalled", "Thread sample taken. Restart overlays when you can.")
+        set_attention("IINACT", event_note("the parser stalled", files[0] if files else None))
 
 
 
@@ -487,6 +490,7 @@ class HangWatch:
         subprocess.run(["sample", str(pid), "5", "-file", out], capture_output=True)
         log(f"thread sample: {out}")
         notify("Game window frozen", f"pid {pid}: no plugin heartbeat for {age:.0f}s. Force Quit it; leftovers are cleared for you.")
+        set_attention("GameWindow", event_note(f"a game window froze (no plugin heartbeat for {age:.0f} s)", out))
 
 def notify(title, text):
     subprocess.run(["osascript", "-e", f'display notification "{text}" with title "{title}"'],

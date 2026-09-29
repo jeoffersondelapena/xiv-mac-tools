@@ -3,6 +3,8 @@
 and Dalamud's plugin-repo fetch outcomes, so a wedged plugin installer can be correlated with a
 tunnel rebuild. Read-only. --watch runs forever; --last N prints the last N events."""
 import os, re, time, re, subprocess, sys, time, datetime
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from attention import set_attention, event_note  # noqa: E402
 
 LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "netwatch.log")
 DALAMUD = os.path.expanduser("~/Library/Application Support/XIV on Mac/logs/dalamud.log")
@@ -63,6 +65,7 @@ def snapshot(state):
                                      "  http=%{http_code} dns=%{time_namelookup}s connect=%{time_connect}s total=%{time_total}s\n", url) + "\n")
         f.write("=== routes ===\n" + sh("netstat", "-rn", "-f", "inet")[:4000])
     note(f"captured the failing state to {os.path.basename(out)}")
+    set_attention("Network", event_note("in-game downloads failed", out))
 
     # Where the stalled request is sitting only shows in a thread sample taken while it stalls.
     # Requests time out after ~20 s and the poll runs every 15 s, so sample now and again shortly after.
