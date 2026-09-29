@@ -17,7 +17,10 @@ def attention_lines(existing, source, note):
 def set_attention(source, note, path=ATTENTION):
     """Leave a note Overlay Doctor shows the player; None clears this source's note. Never raises."""
     try:
-        existing = open(path).read() if os.path.exists(path) else ""
+        existing = ""
+        if os.path.exists(path):
+            with open(path) as f:
+                existing = f.read()
         text = attention_lines(existing, source, note)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if text:
