@@ -151,5 +151,34 @@ class LogSnapshots(unittest.TestCase):
         self.assertEqual("dalamud-20260928-160000-old.log", us.snapshot_name("dalamud.old.log", self.T0))
 
 
+class PatchAndWikiChores(unittest.TestCase):
+    NOW = datetime.datetime(2026, 9, 29, 12, 0, 0)
+
+    def test_the_first_tick_records_the_present_and_regenerates_nothing(self):
+        state = {}
+        us.seed(state, "2026.09.15.0000.0000", "key-a", self.NOW)
+        self.assertEqual({"game_version": "2026.09.15.0000.0000", "api_key": "key-a"}, state["patch"])
+        self.assertEqual("2026-09-29T12:00:00", state["codex_refreshed"])
+        self.assertFalse(us.patch_regen_needed(state, "2026.09.15.0000.0000", "key-a", running=False))
+
+    def test_a_patch_waits_for_the_data_source_and_a_closed_game(self):
+        state = {"patch": {"game_version": "2026.09.15.0000.0000", "api_key": "key-a"}}
+        self.assertFalse(us.patch_regen_needed(state, "2026.10.20.0000.0000", "key-a", running=False))
+        self.assertFalse(us.patch_regen_needed(state, "2026.10.20.0000.0000", "key-b", running=True))
+        self.assertTrue(us.patch_regen_needed(state, "2026.10.20.0000.0000", "key-b", running=False))
+
+    def test_a_data_source_update_alone_or_unknown_values_change_nothing(self):
+        state = {"patch": {"game_version": "2026.09.15.0000.0000", "api_key": "key-a"}}
+        self.assertFalse(us.patch_regen_needed(state, "2026.09.15.0000.0000", "key-b", running=False))
+        self.assertFalse(us.patch_regen_needed(state, None, "key-b", running=False))
+        self.assertFalse(us.patch_regen_needed(state, "2026.10.20.0000.0000", None, running=False))
+        self.assertFalse(us.patch_regen_needed({}, "2026.10.20.0000.0000", "key-b", running=False))
+
+    def test_the_wiki_refresh_is_weekly_from_the_last_one(self):
+        self.assertFalse(us.codex_refresh_due({}, self.NOW))
+        self.assertFalse(us.codex_refresh_due({"codex_refreshed": "2026-09-23T12:00:01"}, self.NOW))
+        self.assertTrue(us.codex_refresh_due({"codex_refreshed": "2026-09-22T12:00:00"}, self.NOW))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -8,8 +8,12 @@ dirty clone or a Dalamud API mismatch is reported and left alone.
 
 The same tick also copies Dalamud's log files aside while no game runs: Dalamud keeps one session back
 and only its first 10 MB, so a relaunch before a log was read loses lines.
+
+Two more chores ride on the tick: after a game patch, once the game-data source has caught up, the
+GatherBuddy Reborn lists are regenerated and the settings policy re-applied (game closed); and once a
+week Codex's wiki data is rebuilt and handed to the plugin.
 """
-import datetime, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
+import datetime, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
 
 BASE = os.path.expanduser("~/Library/Application Support/XIV on Mac")
 STATE = os.path.join(BASE, "wedge-watch", "upstream-sync-state.json")
@@ -20,6 +24,15 @@ LOG_DIR = os.path.join(BASE, "logs")
 LOG_ARCHIVE = os.path.join(BASE, "wedge-watch", "log-archive")
 LOG_ARCHIVE_KEEP = 30
 LOG_SOURCES = ("dalamud.log", "dalamud.old.log")
+GAME_VER = os.path.join(BASE, "ffxiv", "game", "ffxivgame.ver")
+XIVAPI_PROBE = "https://v2.xivapi.com/api/sheet/Item?limit=1&fields=Name"   # its "version" is the key of the patch it serves
+LISTS_TOOL = os.path.expanduser("~/.claude/skills/gbr-lists/gbr_lists.py")
+SETTINGS_TOOL = os.path.expanduser("~/.claude/skills/gbr-settings/gbr_check.py")
+CODEX_PIPELINE = os.path.expanduser("~/Projects/ffxiv-codex/data/pipeline/run_all.py")
+CODEX_DATA = os.path.expanduser("~/Projects/ffxiv-codex/data/codex-data.json")
+CODEX_LIVE = os.path.join(BASE, "pluginConfigs", "Codex", "codex-data.json")
+CODEX_REFRESH_DAYS = 7
+TOOL_TIMEOUT = 40 * 60
 RUN_TIMEOUT = 25 * 60
 WINE_CMD_RE = re.compile(r"^[A-Za-z]:\\.*?\.exe(?=\s|$)")
 
@@ -255,6 +268,88 @@ def snapshot_logs(state, running=None, log_dir=LOG_DIR, archive=LOG_ARCHIVE, kee
     return written
 
 
+def game_version():
+    try:
+        return open(GAME_VER).read().strip() or None
+    except OSError:
+        return None
+
+
+def xivapi_key():
+    try:
+        req = urllib.request.Request(XIVAPI_PROBE, headers={"User-Agent": "xiv-mac-tools/1"})
+        return json.load(urllib.request.urlopen(req, timeout=30)).get("version") or None
+    except Exception:
+        return None
+
+
+def seed(state, version, api_key, now):
+    """First tick with this feature: the present is the baseline, nothing is regenerated for it."""
+    st = state.setdefault("patch", {})
+    if version and "game_version" not in st:
+        st["game_version"], st["api_key"] = version, api_key
+    state.setdefault("codex_refreshed", now.isoformat(timespec="seconds"))
+
+
+def patch_regen_needed(state, version, api_key, running):
+    """The game moved to a new version and the data source moved since the lists were built, while no game runs."""
+    st = state.get("patch") or {}
+    if running or not version or not api_key or "game_version" not in st:
+        return False
+    return version != st["game_version"] and api_key != st.get("api_key")
+
+
+def codex_refresh_due(state, now, days=CODEX_REFRESH_DAYS):
+    last = state.get("codex_refreshed")
+    if not last:
+        return False
+    return (now - datetime.datetime.fromisoformat(last)).days >= days
+
+
+def run_tool(args, cwd=None):
+    """(exit code, the tool's RESULT line, last stderr line)."""
+    r = subprocess.run([sys.executable, *args], cwd=cwd, capture_output=True, text=True, timeout=TOOL_TIMEOUT)
+    result = next((l for l in r.stdout.splitlines() if l.startswith("RESULT")), "")
+    return r.returncode, result, (r.stderr.strip().splitlines() or [""])[-1]
+
+
+def regenerate_after_patch(state, version, api_key):
+    log(f"game moved to {version}; regenerating the GatherBuddy Reborn lists")
+    code, result, err = run_tool([LISTS_TOOL, "--write"])
+    if code != 0 or not result.startswith("RESULT: written"):
+        log(f"list regeneration failed: {result or err}")
+        notify("GatherBuddy Reborn lists need a hand", f"Regeneration for game {version} failed: {result or err}"[:200])
+        set_attention("GatherBuddyReborn", f"the lists could not be regenerated for game {version}")
+        return
+    code, settings, err = run_tool([SETTINGS_TOOL])
+    if "differ" in settings:
+        code, settings, err = run_tool([SETTINGS_TOOL, "--write"])
+    if settings.startswith("RESULT: BLOCKED") or not settings:
+        notify("GatherBuddy Reborn settings need a hand", f"After game {version}: {settings or err}"[:200])
+        set_attention("GatherBuddyReborn", f"the settings policy needs a look after game {version}")
+    state["patch"] = {"game_version": version, "api_key": api_key, "at": datetime.datetime.now().isoformat(timespec="seconds")}
+    log(f"lists regenerated for game {version}; settings: {settings}")
+    notify("Lists regenerated for the new patch", f"Game {version}. {result[8:120]}")
+
+
+def refresh_codex(state, now):
+    log("refreshing Codex's data from the wiki")
+    r = subprocess.run([sys.executable, CODEX_PIPELINE], capture_output=True, text=True, timeout=TOOL_TIMEOUT)
+    if r.returncode != 0 or not os.path.exists(CODEX_DATA):
+        tail = (r.stderr.strip().splitlines() or r.stdout.strip().splitlines() or [""])[-1]
+        log(f"Codex data refresh failed: {tail}")
+        notify("Codex data refresh failed", tail[:200])
+        # try again tomorrow rather than every hour
+        state["codex_refreshed"] = (now - datetime.timedelta(days=CODEX_REFRESH_DAYS - 1)).isoformat(timespec="seconds")
+        return
+    os.makedirs(os.path.dirname(CODEX_LIVE), exist_ok=True)
+    tmp = CODEX_LIVE + ".tmp"
+    shutil.copyfile(CODEX_DATA, tmp)
+    os.replace(tmp, CODEX_LIVE)
+    state["codex_refreshed"] = now.isoformat(timespec="seconds")
+    log("Codex data refreshed; the plugin picks it up at the next launch or /codex reload")
+
+
 def load_state():
     try:
         return json.load(open(STATE))
@@ -338,6 +433,20 @@ def main():
             log(f"dalamud log copied to log-archive/{name}")
     except Exception as ex:
         log(f"log snapshot: {type(ex).__name__}: {ex}")
+    save_state(state)
+    now = datetime.datetime.now()
+    version, key = game_version(), xivapi_key()
+    seed(state, version, key, now)
+    try:
+        if patch_regen_needed(state, version, key, game_running()):
+            regenerate_after_patch(state, version, key)
+    except Exception as ex:
+        log(f"patch regeneration: {type(ex).__name__}: {ex}")
+    try:
+        if codex_refresh_due(state, now):
+            refresh_codex(state, now)
+    except Exception as ex:
+        log(f"Codex refresh: {type(ex).__name__}: {ex}")
     save_state(state)
     for plugin in PLUGINS:
         try:
