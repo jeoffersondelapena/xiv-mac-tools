@@ -309,7 +309,8 @@ def plugin_version(manifest_glob):
     vers = []
     for path in glob.glob(manifest_glob):
         try:
-            v = json.load(open(path)).get("AssemblyVersion")
+            with open(path) as f:
+                v = json.load(f).get("AssemblyVersion")
         except (OSError, ValueError):
             continue
         if v:
