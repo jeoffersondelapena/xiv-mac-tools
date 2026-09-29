@@ -174,6 +174,24 @@ class PatchAndWikiChores(unittest.TestCase):
         self.assertFalse(us.patch_regen_needed(state, "2026.10.20.0000.0000", None, running=False))
         self.assertFalse(us.patch_regen_needed({}, "2026.10.20.0000.0000", "key-b", running=False))
 
+    def test_a_policy_is_rechecked_only_when_its_plugin_changed_version(self):
+        state = {}
+        us.seed(state, "2026.09.15.0000.0000", "key-a", self.NOW, [("WrathCombo", "1.0.4.26"), ("GatherBuddyReborn", None)])
+        self.assertEqual({"WrathCombo": "1.0.4.26"}, state["policies"])
+        self.assertFalse(us.policy_check_needed(state, "WrathCombo", "1.0.4.26"))
+        self.assertTrue(us.policy_check_needed(state, "WrathCombo", "1.0.4.27"))
+        self.assertFalse(us.policy_check_needed(state, "WrathCombo", None))
+        self.assertFalse(us.policy_check_needed(state, "GatherBuddyReborn", "7.5.6.1"))
+
+    def test_the_newest_installed_manifest_wins_and_broken_ones_are_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            for ver, text in (("1.0.4.25", '{"AssemblyVersion": "1.0.4.25"}'), ("1.0.4.26", '{"AssemblyVersion": "1.0.4.26"}'), ("junk", "{")):
+                os.makedirs(os.path.join(d, ver))
+                with open(os.path.join(d, ver, "WrathCombo.json"), "w") as f:
+                    f.write(text)
+            self.assertEqual("1.0.4.26", us.plugin_version(os.path.join(d, "*", "WrathCombo.json")))
+            self.assertIsNone(us.plugin_version(os.path.join(d, "*", "Other.json")))
+
     def test_the_wiki_refresh_is_weekly_from_the_last_one(self):
         self.assertFalse(us.codex_refresh_due({}, self.NOW))
         self.assertFalse(us.codex_refresh_due({"codex_refreshed": "2026-09-23T12:00:01"}, self.NOW))

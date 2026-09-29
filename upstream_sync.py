@@ -11,7 +11,8 @@ and only its first 10 MB, so a relaunch before a log was read loses lines.
 
 Two more chores ride on the tick: after a game patch, once the game-data source has caught up, the
 GatherBuddy Reborn lists are regenerated and the settings policy re-applied (game closed); and once a
-week Codex's wiki data is rebuilt and handed to the plugin.
+week Codex's wiki data is rebuilt and handed to the plugin. When GatherBuddy Reborn or Wrath Combo changes
+version, its settings policy is checked again and re-applied with the game closed.
 """
 import datetime, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
 
@@ -32,6 +33,14 @@ CODEX_PIPELINE = os.path.expanduser("~/Projects/ffxiv-codex/data/pipeline/run_al
 CODEX_DATA = os.path.expanduser("~/Projects/ffxiv-codex/data/codex-data.json")
 CODEX_LIVE = os.path.join(BASE, "pluginConfigs", "Codex", "codex-data.json")
 CODEX_REFRESH_DAYS = 7
+WRATH_TOOL = os.path.expanduser("~/.claude/skills/wrath-settings/wrath_check.py")
+# settings policies re-checked when their plugin's installed version changes
+POLICIES = [
+    {"name": "GatherBuddyReborn", "tool": SETTINGS_TOOL,
+     "manifest": os.path.expanduser("~/Projects/gbr-fork/GatherBuddy/bin/Release/GatherBuddyReborn.json")},
+    {"name": "WrathCombo", "tool": WRATH_TOOL,
+     "manifest": os.path.join(BASE, "installedPlugins", "WrathCombo", "*", "WrathCombo.json")},
+]
 TOOL_TIMEOUT = 40 * 60
 RUN_TIMEOUT = 25 * 60
 WINE_CMD_RE = re.compile(r"^[A-Za-z]:\\.*?\.exe(?=\s|$)")
@@ -283,12 +292,59 @@ def xivapi_key():
         return None
 
 
-def seed(state, version, api_key, now):
-    """First tick with this feature: the present is the baseline, nothing is regenerated for it."""
+def seed(state, version, api_key, now, plugin_versions=()):
+    """First tick with this feature: the present is the baseline, nothing is regenerated or re-checked for it."""
     st = state.setdefault("patch", {})
     if version and "game_version" not in st:
         st["game_version"], st["api_key"] = version, api_key
     state.setdefault("codex_refreshed", now.isoformat(timespec="seconds"))
+    policies = state.setdefault("policies", {})
+    for name, pv in plugin_versions:
+        if pv and name not in policies:
+            policies[name] = pv
+
+
+def plugin_version(manifest_glob):
+    """AssemblyVersion of the newest manifest the pattern matches; Dalamud keeps old plugin folders around."""
+    vers = []
+    for path in glob.glob(manifest_glob):
+        try:
+            v = json.load(open(path)).get("AssemblyVersion")
+        except (OSError, ValueError):
+            continue
+        if v:
+            vers.append(v)
+    return max(vers, key=lambda v: tuple(int(x) for x in re.findall(r"\d+", v))) if vers else None
+
+
+def policy_check_needed(state, name, version):
+    seen = (state.get("policies") or {}).get(name)
+    return bool(version) and seen is not None and seen != version
+
+
+def check_policy(state, policy, version):
+    name, tool = policy["name"], policy["tool"]
+    code, result, err = run_tool([tool])
+    if result.startswith("RESULT: matches policy"):
+        outcome = "matches the policy"
+    elif "DRIFT" in result or "differ" in result:
+        if game_running():
+            log(f"{name} {version}: settings drifted; waiting for the game to close to re-apply the policy")
+            return
+        run_tool([tool, "--write"])
+        code, again, err = run_tool([tool])
+        if again.startswith("RESULT: matches policy"):
+            outcome = "re-applied"
+        else:
+            outcome = f"re-apply did not stick ({again or err})"
+            notify(f"{name} settings need a hand", f"After the update to {version}: {again or err}"[:200])
+            set_attention(name, f"the settings policy needs a look after the update to {version}")
+    else:
+        outcome = f"needs a hand ({result or err})"
+        notify(f"{name} settings need a hand", f"After the update to {version}: {result or err}"[:200])
+        set_attention(name, f"the settings policy needs a look after the update to {version}")
+    state.setdefault("policies", {})[name] = version
+    log(f"{name} {version}: policy check: {outcome}")
 
 
 def patch_regen_needed(state, version, api_key, running):
@@ -436,7 +492,8 @@ def main():
     save_state(state)
     now = datetime.datetime.now()
     version, key = game_version(), xivapi_key()
-    seed(state, version, key, now)
+    plugin_versions = [(pol["name"], plugin_version(pol["manifest"])) for pol in POLICIES]
+    seed(state, version, key, now, plugin_versions)
     try:
         if patch_regen_needed(state, version, key, game_running()):
             regenerate_after_patch(state, version, key)
@@ -447,6 +504,12 @@ def main():
             refresh_codex(state, now)
     except Exception as ex:
         log(f"Codex refresh: {type(ex).__name__}: {ex}")
+    for pol, (_, pv) in zip(POLICIES, plugin_versions):
+        try:
+            if policy_check_needed(state, pol["name"], pv):
+                check_policy(state, pol, pv)
+        except Exception as ex:
+            log(f"{pol['name']} policy check: {type(ex).__name__}: {ex}")
     save_state(state)
     for plugin in PLUGINS:
         try:
