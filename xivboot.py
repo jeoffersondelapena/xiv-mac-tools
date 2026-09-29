@@ -109,7 +109,7 @@ def game_pid():
 
 
 def watch():
-    seen = set(); sampled = set()
+    seen = set(); sampled = set(); noted = False
     while True:
         lines = read_log(); bl = boots(lines)
         if bl:
@@ -119,8 +119,10 @@ def watch():
             if stalled and key not in sampled:
                 sampled.add(key); out = os.path.join(HERE, f"wedge-sample-{r['start'].strftime('%H%M%S')}.txt")
                 subprocess.run(["sample", pid, "8", "-file", out], capture_output=True)
-                set_attention("Boot", event_note("a boot wedged on a black screen", out))
+                set_attention("Boot", event_note("a boot wedged on a black screen", out)); noted = True
                 open(os.path.join(HERE, f"boot-{r['start'].strftime('%H%M%S')}.txt"), "a").write(report(seg, live=True) + f"\n  STALL detected at +{int(age)}s; thread sample: {out}\n")
+            if noted and key not in sampled and r["first_frame"] and r["plugins_done"]:
+                set_attention("Boot", None); noted = False
             done = (r["plugins_done"] or r["ended"] or crash_after(r["start"])) and not pid
             if (done or (r["plugins_done"] and age > 300)) and key not in seen:
                 seen.add(key); open(os.path.join(HERE, f"boot-{r['start'].strftime('%H%M%S')}.txt"), "a").write(report(seg) + "\n")

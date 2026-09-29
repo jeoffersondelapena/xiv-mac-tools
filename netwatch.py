@@ -84,7 +84,7 @@ def watch():
     global snapped
     prev = state(); note("start: " + " | ".join(f"{k}={v}" for k, v in prev.items()))
     seen_fail = seen_ok = 0
-    primed = False
+    primed = False; noted = False
     while True:
         time.sleep(15)
         cur = state()
@@ -99,9 +99,11 @@ def watch():
         fails, oks = text.count("PluginMaster failed"), text.count("Successfully fetched repo")
         if fails > seen_fail and primed:
             note(f"dalamud: {fails - seen_fail} repo fetch failure(s) | " + " | ".join(f"{k}={v}" for k, v in cur.items()))
-            snapshot(cur)
+            snapshot(cur); noted = True
         if oks > seen_ok and primed:
             note(f"dalamud: {oks - seen_ok} repo fetch success(es)")
+            if noted:
+                set_attention("Network", None); noted = False
         seen_fail, seen_ok, primed = fails, oks, True
 
 if __name__ == "__main__":

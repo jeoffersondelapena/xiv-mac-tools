@@ -376,6 +376,7 @@ class StallWatch:
             self.on_stall(now, games, chat)
         elif self.stalled and parser > 0:
             log("IINACT parser lines resumed")
+            set_attention("IINACT", None)
         self.stalled = stalled
 
     def on_denied(self, games):
@@ -460,6 +461,11 @@ class HangWatch:
 
     def tick(self, now, games):
         starts = {pid: st for pid, st, _, _ in games}
+        gone = [pid for pid in self.reported if pid not in starts]
+        if gone:
+            self.reported.difference_update(gone)
+            if not self.reported:
+                set_attention("GameWindow", None)
         try:
             names = [n for n in os.listdir(self.directory) if n.startswith("iinact-")]
         except OSError:
