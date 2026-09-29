@@ -333,11 +333,14 @@ def check_policy(state, policy, version):
         else:
             outcome = f"re-apply did not stick ({again or err})"
             notify(f"{name} settings need a hand", f"After the update to {version}: {again or err}"[:200])
-            set_attention(name, f"the settings policy needs a look after the update to {version}")
+            state.setdefault("policy_notes", {})[name] = f"the settings policy needs a look after the update to {version}"
     else:
         outcome = f"needs a hand ({result or err})"
         notify(f"{name} settings need a hand", f"After the update to {version}: {result or err}"[:200])
-        set_attention(name, f"the settings policy needs a look after the update to {version}")
+        state.setdefault("policy_notes", {})[name] = f"the settings policy needs a look after the update to {version}"
+    if outcome in ("matches the policy", "re-applied"):
+        (state.get("policy_notes") or {}).pop(name, None)
+        set_attention(name, None)
     state.setdefault("policies", {})[name] = version
     log(f"{name} {version}: policy check: {outcome}")
 
@@ -415,6 +418,19 @@ def save_state(state):
     os.replace(tmp, STATE)
 
 
+def remember_note(st, source, note):
+    """A standing problem's note is kept in state and re-asserted every tick; an in-game ack only hides it until then."""
+    st["note"] = note
+    set_attention(source, note)
+
+
+def reassert_notes(state):
+    """Every note still standing, as (source, note); called each tick before the chores."""
+    notes = [(name, st["note"]) for name, st in state.items() if isinstance(st, dict) and st.get("note")]
+    notes += [(name, note) for name, note in (state.get("policy_notes") or {}).items() if note]
+    return notes
+
+
 def sync_one(plugin, state):
     name = plugin["name"]
     st = state.setdefault(name, {})
@@ -432,7 +448,7 @@ def sync_one(plugin, state):
         st["failed_branch"] = branch_head(plugin)
         log(f"{name}: workflow run {run_id} ended with {conclusion}; the branch was left alone")
         notify(f"{name}: upstream sync needs a hand", f"The rebase or build failed (run {run_id}).")
-        set_attention(name, f"upstream sync needs a hand (workflow run {run_id} {conclusion})")
+        remember_note(st, name, f"upstream sync needs a hand (workflow run {run_id} {conclusion})")
         return
     dest = tempfile.mkdtemp(prefix=f"{name}-")
     download_artifact(plugin, run_id, dest)
@@ -443,7 +459,7 @@ def sync_one(plugin, state):
         st["failed_branch"] = branch_head(plugin)
         log(f"{name}: artifact hash mismatch on {bad}; not installed")
         notify(f"{name}: build rejected", "Downloaded files did not match their hash list.")
-        set_attention(name, "a downloaded build failed its hash check and was not installed")
+        remember_note(st, name, "a downloaded build failed its hash check and was not installed")
         return
     level, local = artifact_api_level(dest, plugin["manifest"]), local_api_level()
     if not api_level_compatible(level, local):
@@ -452,7 +468,7 @@ def sync_one(plugin, state):
         st["failed_api_level"] = local
         log(f"{name}: build targets Dalamud API {level}, this Mac runs {local}; not installed")
         notify(f"{name}: build not installed", f"Built for Dalamud API {level}; this Mac runs {local}.")
-        set_attention(name, f"an upstream build for Dalamud API {level} is waiting; this Mac runs API {local}")
+        remember_note(st, name, f"an upstream build for Dalamud API {level} is waiting; this Mac runs API {local}")
         return
     st["pending_install"] = {"dest": dest, "upstream": head, "sha": open(os.path.join(dest, "COMMIT")).read().strip()}
     return finish_install(plugin, st, st["pending_install"])
@@ -472,6 +488,7 @@ def finish_install(plugin, st, pending):
     st.pop("failed_upstream", None)
     st.pop("failed_api_level", None)
     st.pop("failed_branch", None)
+    st.pop("note", None)
     set_attention(name, None)
     log(f"{name}: installed build {pending['sha'][:7]} (upstream {pending['upstream'][:7]}); {note}")
     notify(f"{name} updated", f"Rebased on upstream {pending['upstream'][:7]}; loads at the next launch. {note}.")
@@ -479,6 +496,8 @@ def finish_install(plugin, st, pending):
 
 def main():
     state = load_state()
+    for source, note in reassert_notes(state):
+        set_attention(source, note)
     try:
         for name in snapshot_logs(state):
             log(f"dalamud log copied to log-archive/{name}")

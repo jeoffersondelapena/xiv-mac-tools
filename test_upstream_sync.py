@@ -231,5 +231,16 @@ class AttentionNotes(unittest.TestCase):
         self.assertEqual("the parser stalled at 10:02", att.event_note("the parser stalled", None, when))
 
 
+class StandingNotes(unittest.TestCase):
+    def test_notes_kept_in_state_are_reasserted_and_dropped_when_solved(self):
+        state = {"IINACT": {"failed_upstream": "abc", "note": "upstream sync needs a hand (workflow run 1 failure)"},
+                 "Browsingway": {"synced_upstream": "def"},
+                 "policy_notes": {"WrathCombo": "the settings policy needs a look after the update to 1.0.4.27"}}
+        self.assertEqual([("IINACT", "upstream sync needs a hand (workflow run 1 failure)"),
+                          ("WrathCombo", "the settings policy needs a look after the update to 1.0.4.27")], us.reassert_notes(state))
+        state["IINACT"].pop("note"); state["policy_notes"].pop("WrathCombo")
+        self.assertEqual([], us.reassert_notes(state))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
