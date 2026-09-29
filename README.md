@@ -9,7 +9,7 @@ Watchers and one command that keep a two-client FFXIV setup on XIV on Mac honest
 | `xivboot.py` (launchd `xivboot`) | boot monitor: first frame, plugin load, samples of wedged boots |
 | `netwatch.py` (launchd `xivnetwatch`) | captures the in-game HTTP failures with thread samples |
 | `bin/xivport` | `xivport`, `clean`, `sync`, `sample` |
-| `swap_iinact.py`, `register_dev_plugin.py` | install a locally built plugin as a Dalamud dev plugin |
+| `register_dev_plugin.py` | register a locally built plugin as a Dalamud dev plugin |
 | `upstream_sync.py` (launchd `xivupstream`, hourly) | when a plugin's upstream moves, runs the fork's `upstream-sync` workflow on GitHub, then downloads the build it published, checks its hashes and Dalamud API level, installs it while no game runs, and fast-forwards the local clone; the same tick copies `dalamud.log` / `dalamud.old.log` into `log-archive/` while no game runs (one copy per session, newest 30 kept), since Dalamud keeps only one session back and only its first 10 MB; after a game patch, once the game-data source has caught up and no game runs, regenerates the GatherBuddy Reborn lists and re-applies the settings policy; once a week rebuilds Codex's wiki data and hands it to the plugin; when GatherBuddy Reborn or Wrath Combo changes version, re-checks its settings policy and re-applies it with the game closed |
 | `test_portwatch.py`, `test_upstream_sync.py` | the suites; run before every commit |
 

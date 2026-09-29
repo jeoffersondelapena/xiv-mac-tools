@@ -80,7 +80,6 @@ def report(seg, live=False):
     if r["errors"]: lines.append(f"  errors ({len(r['errors'])}): " + " | ".join(r["errors"][:4]))
     if r["hitches"]: lines.append(f"  hitches: {r['hitches']}")
     if "Browsingway" not in r["loads"]: lines.append("  Browsingway (dev plugin) did NOT load this boot; if a game patch just landed, rebase and rebuild the fork")
-    lines += fork_status()
     if not live:
         if seg is LAST_SEG and game_pid(): lines.append("  verdict: still running"); return "\n".join(lines)
         verdict = "crashed" if crash else ("never drew a frame (black screen)" if not r["first_frame"] else
@@ -88,17 +87,6 @@ def report(seg, live=False):
         lines.append(f"  verdict: {verdict}")
     return "\n".join(lines)
 
-FORK = os.path.expanduser("~/Projects/browsingway-fork")
-def fork_status():
-    if not os.path.isdir(FORK): return []
-    try:
-        subprocess.run(["git", "fetch", "origin", "-q"], cwd=FORK, capture_output=True, timeout=30)
-        n = subprocess.run(["git", "rev-list", "--count", "HEAD..origin/main"], cwd=FORK, capture_output=True, text=True).stdout.strip()
-        if n and n != "0":
-            last = subprocess.run(["git", "log", "-1", "--format=%cs %s", "origin/main"], cwd=FORK, capture_output=True, text=True).stdout.strip()
-            return [f"  upstream Browsingway has {n} new commit(s) not in your local branch (latest: {last[:70]}); consider rebase + rebuild"]
-    except Exception: pass
-    return []
 
 def _game_pids():
     # The path holds spaces, so argv[0] cannot be split off; instead take the first ".exe"

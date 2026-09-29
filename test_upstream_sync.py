@@ -146,6 +146,19 @@ class LogSnapshots(unittest.TestCase):
         self.assertEqual(["dalamud-20260928-180000.log", "dalamud-20260928-190000.log", "dalamud-20260928-200000.log"],
                          self.archived())
 
+    def test_captures_are_pruned_to_the_newest_of_each_kind(self):
+        with tempfile.TemporaryDirectory() as d:
+            for i in range(4):
+                for kind in ("boot-%d.txt", "hang-sample-%d.txt", "notes-%d.txt"):
+                    path = os.path.join(d, kind % i)
+                    with open(path, "w") as f:
+                        f.write("x")
+                    os.utime(path, (self.T0 + i, self.T0 + i))
+            removed = us.prune_captures(d, {"boot-*.txt": 2, "hang-sample-*.txt": 1})
+            self.assertEqual(["boot-0.txt", "boot-1.txt", "hang-sample-0.txt", "hang-sample-1.txt", "hang-sample-2.txt"], sorted(removed))
+            self.assertEqual(["boot-2.txt", "boot-3.txt", "hang-sample-3.txt", "notes-0.txt", "notes-1.txt", "notes-2.txt", "notes-3.txt"],
+                             sorted(os.listdir(d)))
+
     def test_snapshot_names(self):
         self.assertEqual("dalamud-20260928-160000.log", us.snapshot_name("dalamud.log", self.T0))
         self.assertEqual("dalamud-20260928-160000-old.log", us.snapshot_name("dalamud.old.log", self.T0))

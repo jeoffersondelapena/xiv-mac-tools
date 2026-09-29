@@ -7,7 +7,8 @@ dev-plugin folder (only while no game window runs), and fast-forward the local c
 dirty clone or a Dalamud API mismatch is reported and left alone.
 
 The same tick also copies Dalamud's log files aside while no game runs: Dalamud keeps one session back
-and only its first 10 MB, so a relaunch before a log was read loses lines.
+and only its first 10 MB, so a relaunch before a log was read loses lines. The watchers' captures are
+pruned to the newest few of each kind.
 
 Two more chores ride on the tick: after a game patch, once the game-data source has caught up, the
 GatherBuddy Reborn lists are regenerated and the settings policy re-applied (game closed); and once a
@@ -25,6 +26,10 @@ LOG_DIR = os.path.join(BASE, "logs")
 LOG_ARCHIVE = os.path.join(BASE, "wedge-watch", "log-archive")
 LOG_ARCHIVE_KEEP = 30
 LOG_SOURCES = ("dalamud.log", "dalamud.old.log")
+WATCH_DIR = os.path.join(BASE, "wedge-watch")
+# the watchers' captures, newest kept per kind (an httpfail event is one report plus up to two samples)
+CAPTURE_KEEP = {"boot-*.txt": 30, "wedge-sample-*.txt": 5, "hang-sample-*.txt": 5, "stall-sample-*.txt": 5, "httpfail-*.txt": 15,
+                "iinact-stall*.txt": 2}
 GAME_VER = os.path.join(BASE, "ffxiv", "game", "ffxivgame.ver")
 XIVAPI_PROBE = "https://v2.xivapi.com/api/sheet/Item?limit=1&fields=Name"   # its "version" is the key of the patch it serves
 LISTS_TOOL = os.path.expanduser("~/.claude/skills/gbr-lists/gbr_lists.py")
@@ -246,6 +251,17 @@ def prune_archive(archive, keep):
     files = sorted((os.path.getmtime(p), p) for p in glob.glob(os.path.join(archive, "dalamud-*.log")))
     for _, path in files[:max(0, len(files) - keep)]:
         os.remove(path)
+
+
+def prune_captures(folder=WATCH_DIR, rules=CAPTURE_KEEP):
+    """Delete the older captures beyond each kind's keep count; returns the names removed."""
+    removed = []
+    for pattern, keep in rules.items():
+        files = sorted(glob.glob(os.path.join(folder, pattern)), key=os.path.getmtime)
+        for path in files[:max(0, len(files) - keep)]:
+            os.remove(path)
+            removed.append(os.path.basename(path))
+    return removed
 
 
 def snapshot_logs(state, running=None, log_dir=LOG_DIR, archive=LOG_ARCHIVE, keep=LOG_ARCHIVE_KEEP):
@@ -490,6 +506,12 @@ def main():
             log(f"dalamud log copied to log-archive/{name}")
     except Exception as ex:
         log(f"log snapshot: {type(ex).__name__}: {ex}")
+    try:
+        gone = prune_captures()
+        if gone:
+            log(f"pruned {len(gone)} old capture(s): {', '.join(gone[:6])}{'...' if len(gone) > 6 else ''}")
+    except Exception as ex:
+        log(f"capture pruning: {type(ex).__name__}: {ex}")
     save_state(state)
     now = datetime.datetime.now()
     version, key = game_version(), xivapi_key()
