@@ -591,8 +591,8 @@ class StaleServer(unittest.TestCase):
         self.assertFalse(pw.stale_server_verdict(1, 500, True, [900], 400))
 
     def test_a_normal_exit_gets_time_to_take_its_own_server_down(self):
-        self.assertFalse(pw.stale_server_verdict(0, 8, False, [900], 400))
-        self.assertTrue(pw.stale_server_verdict(0, 13, False, [900], 400))
+        self.assertFalse(pw.stale_server_verdict(0, 25, False, [900], 400))
+        self.assertTrue(pw.stale_server_verdict(0, 31, False, [900], 400))
 
     def test_a_force_quit_is_swept_sooner(self):
         self.assertFalse(pw.stale_server_verdict(0, 3, True, [900], 400))

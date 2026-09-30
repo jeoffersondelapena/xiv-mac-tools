@@ -1005,7 +1005,7 @@ def sweep_plan(n_games, n_servers, n_procs):
 
 
 REAL_SERVER_RE = re.compile(r"XIV on Mac\.app/.*/bin/wineserver\s*$")   # not the launcher's `wineserver -w` waiters
-EXIT_WAIT = 12            # a normal exit takes its server down within 4-9 s
+EXIT_WAIT = 30            # 58 normal exits logged in September: 50 within 5 s, the slowest 22 s
 KILL_WAIT = 4             # a force-quit never does; the plugin's log not ending in 'unloading' tells the two apart
 SERVER_MIN_AGE = 60
 LAUNCH_QUIET = 30         # anything Wine-side younger than this is a launch in progress
