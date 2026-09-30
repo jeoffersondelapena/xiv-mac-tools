@@ -1286,13 +1286,47 @@ def summarise_footprint(report, exes, keep=8):
     return windows, helpers
 
 
+DISTURB_MS = 250          # a frame this long inside a reading counts against the reading
+DISTURB_MIN = 3
+DISTURB_SHARE = 0.2       # by chance a reading holds the minute's longest frame about one time in forty
+MEMORY_LINE_RE = re.compile(r"\[(\d\d):(\d\d):(\d\d)\.\d+\] memory: managed (\d+) MB, committed (\d+) MB, process (\d+) MB; players (\d+); territory (\d+)"
+                            r"(?:; longest frame (\d+) ms at (\d\d):(\d\d):(\d\d)\.(\d))?")
+
+
+def second_of_day(epoch):
+    t = time.localtime(epoch)
+    return t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec + (epoch % 1)
+
+
+def clock_gap(a, b):
+    """a minus b in seconds for two times of day, across midnight."""
+    return ((a - b + 43200) % 86400) - 43200
+
+
 def doctor_memory(tail):
-    """The newest 'memory:' line XIV Doctor wrote, as numbers; None without one."""
-    found = re.findall(r"memory: managed (\d+) MB, committed (\d+) MB, process (\d+) MB; players (\d+); territory (\d+)", tail)
+    """The newest 'memory:' line XIV Doctor wrote, as numbers; None without one. Times are seconds of the day."""
+    found = MEMORY_LINE_RE.findall(tail)
     if not found:
         return None
-    managed, committed, process, players, territory = map(int, found[-1])
-    return {"managed": managed, "committed": committed, "process": process, "players": players, "territory": territory}
+    h, m, s, managed, committed, process, players, territory, longest, lh, lm, ls, lt = found[-1]
+    out = {"managed": int(managed), "committed": int(committed), "process": int(process), "players": int(players), "territory": int(territory),
+           "line_at": int(h) * 3600 + int(m) * 60 + int(s)}
+    if longest:
+        out["longest_ms"] = int(longest)
+        out["longest_at"] = int(lh) * 3600 + int(lm) * 60 + int(ls) + int(lt) / 10
+    return out
+
+
+def reading_disturbed(window, doctor):
+    """Whether the longest frame of the minute XIV Doctor just reported fell inside a reading: True or False once
+    that minute covers the reading, None while it does not. `window` is (start, end) in seconds of the day."""
+    if not doctor or "longest_ms" not in doctor:
+        return None
+    start, end = window
+    if clock_gap(doctor["line_at"], end) < 0 or clock_gap(doctor["line_at"], start) > 61:
+        return None
+    inside = clock_gap(doctor["longest_at"], start) >= -0.3 and clock_gap(doctor["longest_at"], end) <= 0.3
+    return inside and doctor["longest_ms"] >= DISTURB_MS
 
 
 def growth(first, last):
@@ -1327,6 +1361,10 @@ def memory_report(records):
         top = sorted(helpers.items(), key=lambda kv: -kv[1])[:6]
         out.append("other processes at the last reading: " + ", ".join(f"{n} {v} MB" for n, v in top)
                    + f" (all {sum(helpers.values())} MB)")
+    last = records[-1]
+    if "judged" in last:
+        out.append(f"readings held against the game's own frames: {last['judged']}, of which {last['felt']} held the minute's longest frame"
+                   + (" (totals only since)" if last.get("light") else ""))
     worst = max(records, key=lambda r: (r.get("pressure") or 0, r.get("swap_mb") or 0))
     out.append(f"highest memory pressure seen: {PRESSURE.get(worst.get('pressure'), 'unknown')}, swap {worst.get('swap_mb', 0) / 1024:.1f} GB used, at {worst['t']}")
     return "\n".join(out) + "\n"
@@ -1338,9 +1376,16 @@ class MemoryLog:
         self.directory = directory
         self.every = MEMORY_EVERY
         self.last = 0.0
+        self.pending = []
+        self.checked = 0
+        self.disturbed = 0
+        self.light = False
 
     def tick(self, now, games):
-        if not games or now - self.last < self.every:
+        if not games:
+            return
+        self.judge(now, games)
+        if now - self.last < self.every:
             return
         self.last = now
         try:
@@ -1351,7 +1396,31 @@ class MemoryLog:
         if record["took"] > MEMORY_SLOW:
             self.every = min(self.every * 2, 900)
             log(f"a memory reading took {record['took']:.1f}s; next one in {self.every}s")
+        if not self.light:
+            self.pending.append((second_of_day(now), second_of_day(now) + record["took"], now))
+        record["judged"], record["felt"] = self.checked, self.disturbed
         self.write(record)
+
+    def judge(self, now, games):
+        """The readings must not be felt in the game. Each one is held against the longest frame XIV Doctor reports
+        for that minute; when readings keep holding it, only totals are read from then on."""
+        if not self.pending:
+            return
+        doctors = [self.doctor(started) for _, started, _, _ in games]
+        for reading in list(self.pending):
+            verdicts = [reading_disturbed(reading[:2], d) for d in doctors]
+            if any(v is True for v in verdicts):
+                self.disturbed += 1
+            elif not any(v is False for v in verdicts):
+                if now - reading[2] > 150:
+                    self.pending.remove(reading)
+                continue
+            self.checked += 1
+            self.pending.remove(reading)
+        if not self.light and self.disturbed >= DISTURB_MIN and self.disturbed >= DISTURB_SHARE * self.checked:
+            self.light = True
+            self.pending.clear()
+            log(f"{self.disturbed} of {self.checked} memory readings held the minute's longest frame; reading totals only from here")
 
     def measure(self, now, games):
         exes = {pid: wine_exe(cmd) for pid, cmd in wine_procs()}
@@ -1359,7 +1428,8 @@ class MemoryLog:
         began = time.time()
         out = self.path + ".footprint.json"
         args = [a for pid in exes for a in ("-p", str(pid))]
-        subprocess.run(["footprint", "--swapped", "-j", out, *args], capture_output=True, timeout=60)
+        mode = ["--noCategories"] if self.light else ["--swapped"]
+        subprocess.run(["footprint", *mode, "-j", out, *args], capture_output=True, timeout=60)
         with open(out) as f:
             report = json.load(f)
         os.remove(out)
@@ -1372,7 +1442,7 @@ class MemoryLog:
         swap = re.search(r"used = ([\d.]+)M", subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True).stdout)
         return {"t": datetime.datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"), "pressure": level,
                 "swap_mb": round(float(swap.group(1))) if swap else None, "windows": windows, "helpers": helpers,
-                "took": round(time.time() - began, 2)}
+                "took": round(time.time() - began, 2), "light": self.light}
 
     def doctor(self, started):
         if started is None:

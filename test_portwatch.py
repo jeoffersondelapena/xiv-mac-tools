@@ -817,9 +817,80 @@ class MemoryRecord(unittest.TestCase):
         self.assertEqual({"Browsingway.Renderer.exe": 600, "services.exe": 12}, helpers)
 
     def test_the_plugins_own_memory_line_is_read(self):
-        tail = "[x] heartbeat: a\n[x] memory: managed 700 MB, committed 900 MB, process 9000 MB; players 3; territory 129\n[x] memory: managed 812 MB, committed 1490 MB, process 9800 MB; players 23; territory 131\n"
-        self.assertEqual({"managed": 812, "committed": 1490, "process": 9800, "players": 23, "territory": 131}, pw.doctor_memory(tail))
-        self.assertIsNone(pw.doctor_memory("[x] heartbeat: a\n"))
+        tail = ("[21:58:07.001] heartbeat: a\n[21:58:07.002] memory: managed 700 MB, committed 900 MB, process 9000 MB; players 3; territory 129\n"
+                "[21:59:07.004] memory: managed 812 MB, committed 1490 MB, process 9800 MB; players 23; territory 131; longest frame 412 ms at 21:58:40.3\n")
+        self.assertEqual({"managed": 812, "committed": 1490, "process": 9800, "players": 23, "territory": 131,
+                          "line_at": 21 * 3600 + 59 * 60 + 7, "longest_ms": 412, "longest_at": 21 * 3600 + 58 * 60 + 40.3}, pw.doctor_memory(tail))
+        older = pw.doctor_memory("[21:58:07.002] memory: managed 700 MB, committed 900 MB, process 9000 MB; players 3; territory 129\n")
+        self.assertEqual((700, 3), (older["managed"], older["players"]))
+        self.assertNotIn("longest_ms", older)
+        self.assertIsNone(pw.doctor_memory("[21:58:07.001] heartbeat: a\n"))
+
+    def at(self, h, m, s):
+        return h * 3600 + m * 60 + s
+
+    def doctor(self, line_at, longest_ms, longest_at):
+        return {"line_at": line_at, "longest_ms": longest_ms, "longest_at": longest_at}
+
+    def test_a_long_frame_inside_a_reading_counts_against_it(self):
+        reading = (self.at(21, 58, 40), self.at(21, 58, 41.2))
+        self.assertTrue(pw.reading_disturbed(reading, self.doctor(self.at(21, 59, 7), 412, self.at(21, 58, 40.6))))
+        self.assertTrue(pw.reading_disturbed(reading, self.doctor(self.at(21, 59, 7), 412, self.at(21, 58, 41.4))))
+
+    def test_a_long_frame_elsewhere_in_the_minute_or_a_short_one_does_not(self):
+        reading = (self.at(21, 58, 40), self.at(21, 58, 41.2))
+        self.assertFalse(pw.reading_disturbed(reading, self.doctor(self.at(21, 59, 7), 3000, self.at(21, 58, 55))))
+        self.assertFalse(pw.reading_disturbed(reading, self.doctor(self.at(21, 59, 7), 40, self.at(21, 58, 40.6))))
+
+    def test_a_reading_is_not_judged_before_the_plugin_has_reported_its_minute(self):
+        reading = (self.at(21, 58, 40), self.at(21, 58, 41.2))
+        self.assertIsNone(pw.reading_disturbed(reading, self.doctor(self.at(21, 58, 7), 900, self.at(21, 57, 50))))
+        self.assertIsNone(pw.reading_disturbed(reading, self.doctor(self.at(22, 3, 7), 900, self.at(22, 2, 50))))
+        self.assertIsNone(pw.reading_disturbed(reading, None))
+        self.assertIsNone(pw.reading_disturbed(reading, {"line_at": self.at(21, 59, 7), "managed": 1}))
+
+    def test_midnight_does_not_confuse_the_clock(self):
+        reading = (self.at(23, 59, 50), self.at(23, 59, 51))
+        self.assertTrue(pw.reading_disturbed(reading, self.doctor(self.at(0, 0, 20), 800, self.at(23, 59, 50.5))))
+        self.assertEqual(30, pw.clock_gap(self.at(0, 0, 20), self.at(23, 59, 50)))
+
+    def judged(self, verdicts):
+        """A log fed one reading per verdict, each judged at once."""
+        import tempfile
+        log = pw.MemoryLog(os.path.join(tempfile.mkdtemp(), "memory.log"))
+        said = []
+        saved = (pw.log, pw.reading_disturbed)
+        pw.log = said.append
+        try:
+            for i, verdict in enumerate(verdicts):
+                pw.reading_disturbed = lambda window, doctor, v=verdict: v
+                log.pending.append((1000.0 + i, 1001.0 + i, 5000.0 + 60 * i))
+                log.doctor = lambda started: {"line_at": 0}
+                log.judge(5000.0 + 60 * i + 30, [(26630, 0.0, 50.0, "cmd")])
+        finally:
+            pw.log, pw.reading_disturbed = saved
+        return log, said
+
+    def test_readings_that_keep_holding_the_longest_frame_are_cut_down_to_totals(self):
+        log, said = self.judged([False, True, False, True, True])
+        self.assertTrue(log.light)
+        self.assertEqual((3, 5), (log.disturbed, log.checked))
+        self.assertEqual(["3 of 5 memory readings held the minute's longest frame; reading totals only from here"], said)
+
+    def test_a_few_coincidences_among_many_readings_change_nothing(self):
+        log, said = self.judged([False] * 30 + [True, True, True])
+        self.assertFalse(log.light)
+        self.assertEqual([], said)
+
+    def test_a_reading_nobody_reports_on_is_dropped_after_a_while(self):
+        import tempfile
+        log = pw.MemoryLog(os.path.join(tempfile.mkdtemp(), "memory.log"))
+        log.doctor = lambda started: None
+        log.pending.append((1000.0, 1001.0, 5000.0))
+        log.judge(5060.0, [(26630, 0.0, 50.0, "cmd")])
+        self.assertEqual(1, len(log.pending))
+        log.judge(5200.0, [(26630, 0.0, 50.0, "cmd")])
+        self.assertEqual(([], 0), (log.pending, log.checked))
 
     def records(self):
         first = {"t": "2026-10-01 19:00:00", "pressure": 1, "swap_mb": 500, "took": 0.4, "helpers": {"Browsingway.Renderer.exe": 500},
@@ -843,6 +914,10 @@ class MemoryRecord(unittest.TestCase):
         self.assertIn("plugins' managed heap 600 MB -> 650 MB; players in view 4 -> 41", text)
         self.assertIn("Browsingway.Renderer.exe 640 MB", text)
         self.assertIn("highest memory pressure seen: warning, swap 2.8 GB used, at 2026-10-01 22:00:00", text)
+        self.assertNotIn("readings held against", text)
+        judged = self.records()
+        judged[-1].update(judged=170, felt=1, light=False)
+        self.assertIn("readings held against the game's own frames: 170, of which 1 held the minute's longest frame\n", pw.memory_report(judged))
         self.assertEqual("no game window has been recorded yet\n", pw.memory_report([]))
 
     def test_a_reading_is_taken_once_a_minute_and_only_while_a_game_runs(self):
@@ -908,6 +983,16 @@ class MemoryRecord(unittest.TestCase):
         self.assertTrue(record["windows"][0]["parts"])
         self.assertEqual(1, record["windows"][0]["up_min"])
         self.assertFalse(os.path.exists(log.path + ".footprint.json"))
+        self.assertFalse(record["light"])
+        log.light = True
+        pw.wine_procs = lambda: [(me, "C:\\game\\ffxiv_dx11.exe")]
+        try:
+            totals = log.measure(1000.0, [(me, 940.0, 1.0, "cmd")])
+        finally:
+            pw.wine_procs = saved
+        self.assertTrue(totals["light"])
+        self.assertGreater(totals["windows"][0]["footprint"], 0)
+        self.assertEqual({}, totals["windows"][0]["parts"])
 
 
 class TeardownTiming(unittest.TestCase):
