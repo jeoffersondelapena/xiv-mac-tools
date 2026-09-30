@@ -415,17 +415,18 @@ class StallWatch:
 
 
 
-# IINACT's per-window diag log carries a heartbeat every minute while the game's frame loop runs, which
+# XIV Doctor's per-window diag log carries a heartbeat every minute while the game's frame loop runs, which
 # makes a silent file the cheapest external sign that a live window has frozen (2026-09-06 00:32: one
-# thread spinning in Rosetta's exception server, heartbeats simply stopped).
-IINACT_DIAG_DIR = os.path.join(CFG, "IINACT", "diag")
+# thread spinning in Rosetta's exception server, heartbeats simply stopped). IINACT carried the beat until
+# 2026-09-30; a parser that failed to load switched freeze detection off, and XIV Doctor is always on.
+DOCTOR_DIAG_DIR = os.path.join(CFG, "XIVDoctor", "diag")
 HANG_AFTER = 150          # two missed heartbeats
 START_MATCH_SLACK = 20    # the diag name carries Wine's idea of the start time
 
 
 def diag_start_time(name):
-    """Process start time encoded in `iinact-YYYYMMDD-HHMMSS-<pid>.log`, or None."""
-    m = re.match(r"iinact-(\d{8})-(\d{6})-\d+\.log$", name)
+    """Process start time encoded in a per-window diag name, `doctor-YYYYMMDD-HHMMSS-<pid>.log` or IINACT's, else None."""
+    m = re.match(r"(?:doctor|iinact)-(\d{8})-(\d{6})-\d+\.log$", name)
     if not m:
         return None
     return datetime.datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").timestamp()
@@ -448,14 +449,14 @@ def teardown_note(last_exit_at, now):
 
 def hang_verdict(file_age, has_heartbeat, last_line):
     """A window that has produced heartbeats, then nothing for HANG_AFTER seconds, has frozen.
-    A file ending in 'plugin unloading' is IINACT switched off on purpose, not a hang."""
-    if not has_heartbeat or "plugin unloading" in last_line:
+    A file ending in 'unloading' is the plugin switched off on purpose, not a hang."""
+    if not has_heartbeat or "unloading" in last_line:
         return False
     return file_age > HANG_AFTER
 
 
 class HangWatch:
-    def __init__(self, directory=IINACT_DIAG_DIR):
+    def __init__(self, directory=DOCTOR_DIAG_DIR):
         self.directory = directory
         self.reported = set()
 
@@ -467,7 +468,7 @@ class HangWatch:
             if not self.reported:
                 set_attention("GameWindow", None)
         try:
-            names = [n for n in os.listdir(self.directory) if n.startswith("iinact-")]
+            names = [n for n in os.listdir(self.directory) if n.startswith("doctor-")]
         except OSError:
             return
         for name in names:
