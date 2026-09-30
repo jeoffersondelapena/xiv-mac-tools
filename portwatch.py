@@ -422,7 +422,7 @@ class StallWatch:
 DOCTOR_DIAG_DIR = os.path.join(CFG, "XIVDoctor", "diag")
 HANG_AFTER = 150          # the ceiling: two missed beats of the one-minute cadence older plugin builds keep
 HANG_FLOOR = 20           # four missed beats of the five-second cadence: a hang in a duty gets force-quit within a minute
-STALL_AFTER = 5           # the plugin's own timer thread saying the frame loop is dead needs no inference: sample at once
+STALL_AFTER = 25          # plugin loading stalls the frame loop 10-17 s on every boot; sampling then hit a healthy, busy game (2026-09-30 18:18)
 START_MATCH_SLACK = 20    # the diag name carries Wine's idea of the start time
 
 
