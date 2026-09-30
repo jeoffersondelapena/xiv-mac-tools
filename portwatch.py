@@ -27,6 +27,26 @@ DRIFTING_OVERLAY = "DPS"
 # injector spawns the game, plain Unix style when XIV on Mac starts it bare. Anything else merely
 # quoting an .exe name (a shell running a script that mentions one, say) is not the process.
 WINE_CMD_RE = re.compile(r'^(?:[A-Za-z]:\\|/).*?\.exe(?=\s|$)')
+NOT_A_PATH_RE = re.compile(r'''["']|\s--?[A-Za-z]|[A-Za-z]:\\''')   # quotes, an option, or a drive path inside a Unix one
+
+
+def wine_exe_path(cmd, native=os.path.isfile):
+    """The executable path a Wine command line starts with, else None. A shell or interpreter whose arguments
+    mention an .exe starts with a Unix path too: a zsh line quoting the game's Windows path was taken for a game
+    launch on 2026-09-30, and the watcher ends processes it takes for games."""
+    m = WINE_CMD_RE.match(cmd)
+    if not m:
+        return None
+    path = m.group(0)
+    if path.startswith("/"):
+        first = path.split(None, 1)[0]
+        if not first.lower().endswith(".exe") and native(first):
+            return None
+        if NOT_A_PATH_RE.search(path):
+            return None
+    return path
+
+
 PS_RE = re.compile(r'^\s*(\d+)\s+(\w{3} \w{3}\s+\d+ \d{2}:\d{2}:\d{2} \d{4})\s+([\d.]+)\s+(.*)$')
 
 
@@ -157,8 +177,8 @@ def parse_procs(out, exe):
         if not m:
             continue
         pid, when, cpu, cmd = m.groups()
-        exe_match = WINE_CMD_RE.match(cmd)
-        if not exe_match or not exe_match.group(0).endswith(("\\" + exe, "/" + exe)):
+        path = wine_exe_path(cmd)
+        if not path or not path.endswith(("\\" + exe, "/" + exe)):
             continue
         try:
             started = datetime.datetime.strptime(when, "%a %b %d %H:%M:%S %Y").timestamp()
@@ -1188,7 +1208,7 @@ def wine_ages(now):
             continue
         cmd = m.group(3)
         real = bool(REAL_SERVER_RE.search(cmd))
-        if not real and not WINE_CMD_RE.match(cmd) and not is_wineserver_line(cmd):
+        if not real and not wine_exe_path(cmd) and not is_wineserver_line(cmd):
             continue
         try:
             age = now - datetime.datetime.strptime(m.group(2), "%a %b %d %H:%M:%S %Y").timestamp()
@@ -1238,8 +1258,8 @@ GAME_EXE = "ffxiv_dx11.exe"
 
 def wine_exe(cmd):
     """The executable's own name from a Wine command line, else None."""
-    m = WINE_CMD_RE.match(cmd)
-    return re.split(r"[\\/]", m.group(0))[-1] if m else None
+    path = wine_exe_path(cmd)
+    return re.split(r"[\\/]", path)[-1] if path else None
 
 
 def summarise_footprint(report, exes, keep=8):
@@ -1401,7 +1421,7 @@ def wine_procs():
     found = []
     for line in out.splitlines():
         pid, _, cmd = line.strip().partition(" ")
-        if WINE_CMD_RE.match(cmd):
+        if wine_exe_path(cmd):
             found.append((int(pid), cmd))
     return found
 

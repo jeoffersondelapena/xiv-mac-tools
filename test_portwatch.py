@@ -155,6 +155,22 @@ class ProcessScan(unittest.TestCase):
         self.assertEqual(datetime.datetime(2026, 9, 8, 18, 52, 49).timestamp(), rows[0][1])
         self.assertEqual(54.2, rows[1][2])
 
+    def test_a_shell_whose_arguments_name_the_game_is_not_the_game(self):
+        # the watcher's own maintenance commands looked like a two-second game launch (2026-09-30 23:37)
+        rows = self.rows("/bin/zsh -c cd /x && python3 -c print(pw.wine_exe('C:\\game\\ffxiv_dx11.exe DEV.TestSID=1'))",
+                         "/bin/zsh -c python3 tool.py C:\\game\\ffxiv_dx11.exe DEV.TestSID=1",
+                         "/usr/bin/python3 /x/tool.py /y/game/ffxiv_dx11.exe now")
+        self.assertEqual([], rows)
+
+    def test_a_native_program_is_told_by_its_first_word(self):
+        self.assertIsNone(pw.wine_exe_path("/bin/sh /x/run.sh /y/ffxiv_dx11.exe now", native=lambda p: p == "/bin/sh"))
+        self.assertEqual("/Users/x/Library/Application Support/XIV on Mac/ffxiv/game/ffxiv_dx11.exe",
+                         pw.wine_exe_path("/Users/x/Library/Application Support/XIV on Mac/ffxiv/game/ffxiv_dx11.exe //**token", native=lambda p: False))
+        self.assertEqual("C:\\Program Files\\game\\ffxiv_dx11.exe", pw.wine_exe_path("C:\\Program Files\\game\\ffxiv_dx11.exe DEV.DataPathType=1"))
+        self.assertEqual("/x/out/Browsingway.Renderer.exe", pw.wine_exe_path("/x/out/Browsingway.Renderer.exe --type=gpu-process", native=lambda p: False))
+        dashed = "/Volumes/Games/FINAL FANTASY XIV - A Realm Reborn/game/ffxiv_dx11.exe"
+        self.assertEqual(dashed, pw.wine_exe_path(dashed + " DEV.TestSID=1", native=lambda p: False))
+
     def test_processes_that_merely_mention_the_game_are_not_it(self):
         rows = self.rows("C:\\d\\DalamudCrashHandler.exe --game C:\\game\\ffxiv_dx11.exe",
                          "/bin/sh -c 'sample $(pgrep ffxiv_dx11.exe)'",
