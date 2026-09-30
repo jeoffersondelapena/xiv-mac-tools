@@ -1289,7 +1289,7 @@ def summarise_footprint(report, exes, keep=8):
 DISTURB_MS = 250          # a frame this long inside a reading counts against the reading
 DISTURB_MIN = 3
 DISTURB_SHARE = 0.2       # by chance a reading holds the minute's longest frame about one time in forty
-MEMORY_LINE_RE = re.compile(r"\[(\d\d):(\d\d):(\d\d)\.\d+\] memory: managed (\d+) MB, committed (\d+) MB, process (\d+) MB; players (\d+); territory (\d+)"
+MEMORY_LINE_RE = re.compile(r"\[(\d\d):(\d\d):(\d\d)\.\d+\] memory: managed (\d+) MB, committed (\d+) MB, resident (\d+) MB; players (\d+); territory (\d+)"
                             r"(?:; longest frame (\d+) ms at (\d\d):(\d\d):(\d\d)\.(\d))?")
 
 
@@ -1308,8 +1308,8 @@ def doctor_memory(tail):
     found = MEMORY_LINE_RE.findall(tail)
     if not found:
         return None
-    h, m, s, managed, committed, process, players, territory, longest, lh, lm, ls, lt = found[-1]
-    out = {"managed": int(managed), "committed": int(committed), "process": int(process), "players": int(players), "territory": int(territory),
+    h, m, s, managed, committed, resident, players, territory, longest, lh, lm, ls, lt = found[-1]
+    out = {"managed": int(managed), "committed": int(committed), "resident": int(resident), "players": int(players), "territory": int(territory),
            "line_at": int(h) * 3600 + int(m) * 60 + int(s)}
     if longest:
         out["longest_ms"] = int(longest)

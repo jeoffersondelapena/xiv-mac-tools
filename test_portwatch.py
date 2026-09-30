@@ -817,11 +817,11 @@ class MemoryRecord(unittest.TestCase):
         self.assertEqual({"Browsingway.Renderer.exe": 600, "services.exe": 12}, helpers)
 
     def test_the_plugins_own_memory_line_is_read(self):
-        tail = ("[21:58:07.001] heartbeat: a\n[21:58:07.002] memory: managed 700 MB, committed 900 MB, process 9000 MB; players 3; territory 129\n"
-                "[21:59:07.004] memory: managed 812 MB, committed 1490 MB, process 9800 MB; players 23; territory 131; longest frame 412 ms at 21:58:40.3\n")
-        self.assertEqual({"managed": 812, "committed": 1490, "process": 9800, "players": 23, "territory": 131,
+        tail = ("[21:58:07.001] heartbeat: a\n[21:58:07.002] memory: managed 700 MB, committed 900 MB, resident 9000 MB; players 3; territory 129\n"
+                "[21:59:07.004] memory: managed 812 MB, committed 1490 MB, resident 9800 MB; players 23; territory 131; longest frame 412 ms at 21:58:40.3\n")
+        self.assertEqual({"managed": 812, "committed": 1490, "resident": 9800, "players": 23, "territory": 131,
                           "line_at": 21 * 3600 + 59 * 60 + 7, "longest_ms": 412, "longest_at": 21 * 3600 + 58 * 60 + 40.3}, pw.doctor_memory(tail))
-        older = pw.doctor_memory("[21:58:07.002] memory: managed 700 MB, committed 900 MB, process 9000 MB; players 3; territory 129\n")
+        older = pw.doctor_memory("[21:58:07.002] memory: managed 700 MB, committed 900 MB, resident 9000 MB; players 3; territory 129\n")
         self.assertEqual((700, 3), (older["managed"], older["players"]))
         self.assertNotIn("longest_ms", older)
         self.assertIsNone(pw.doctor_memory("[21:58:07.001] heartbeat: a\n"))
@@ -894,10 +894,10 @@ class MemoryRecord(unittest.TestCase):
 
     def records(self):
         first = {"t": "2026-10-01 19:00:00", "pressure": 1, "swap_mb": 500, "took": 0.4, "helpers": {"Browsingway.Renderer.exe": 500},
-                 "windows": [{"pid": 26630, "footprint": 6000, "swapped": 0, "up_min": 2, "doctor": {"managed": 600, "committed": 800, "process": 5000, "players": 4, "territory": 129},
+                 "windows": [{"pid": 26630, "footprint": 6000, "swapped": 0, "up_min": 2, "doctor": {"managed": 600, "committed": 800, "resident": 5000, "players": 4, "territory": 129},
                               "parts": {"untagged (VM_ALLOCATE)": 3500, "IOAccelerator (graphics)": 2000, "MALLOC_LARGE": 400}}]}
         last = {"t": "2026-10-01 22:00:00", "pressure": 2, "swap_mb": 2900, "took": 0.6, "helpers": {"Browsingway.Renderer.exe": 640, "services.exe": 12},
-                "windows": [{"pid": 26630, "footprint": 11700, "swapped": 2600, "up_min": 182, "doctor": {"managed": 650, "committed": 900, "process": 9000, "players": 41, "territory": 131},
+                "windows": [{"pid": 26630, "footprint": 11700, "swapped": 2600, "up_min": 182, "doctor": {"managed": 650, "committed": 900, "resident": 9000, "players": 41, "territory": 131},
                              "parts": {"untagged (VM_ALLOCATE)": 4100, "IOAccelerator (graphics)": 7000, "MALLOC_LARGE": 380, "stack": 20}}]}
         return [first, last]
 
