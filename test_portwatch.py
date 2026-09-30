@@ -539,9 +539,28 @@ class HangDetection(unittest.TestCase):
         self.assertFalse(pw.hang_verdict(file_age=12, has_heartbeat=True, last_line="[14:00:05.002] heartbeat: b", threshold=20))
 
     def test_the_timer_threads_stall_lines_count_even_though_they_keep_the_file_fresh(self):
-        self.assertFalse(pw.hang_verdict(file_age=1, has_heartbeat=True, last_line="[14:00:20.0] frame loop stalled 15s; gc 1/1/1", threshold=20))
-        self.assertTrue(pw.hang_verdict(file_age=1, has_heartbeat=True, last_line="[14:00:30.0] frame loop stalled 25s; gc 1/1/1", threshold=20))
+        self.assertFalse(pw.hang_verdict(file_age=1, has_heartbeat=True, last_line="[14:00:02.0] frame loop stalled 2s; gc 1/1/1", threshold=20))
+        self.assertTrue(pw.hang_verdict(file_age=1, has_heartbeat=True, last_line="[14:00:05.0] frame loop stalled 5s; gc 1/1/1", threshold=20))
         self.assertFalse(pw.hang_verdict(file_age=1, has_heartbeat=True, last_line="[14:00:40.0] frame loop resumed", threshold=20))
+
+    def test_a_stall_that_ends_on_its_own_takes_the_report_back(self):
+        import tempfile, time
+        d = tempfile.mkdtemp()
+        started = time.time() - 600
+        path = os.path.join(d, "doctor-%s-364.log" % datetime.datetime.fromtimestamp(started).strftime("%Y%m%d-%H%M%S"))
+        with open(path, "w") as f:
+            f.write("[14:00:00.0] heartbeat: a\n[14:00:05.0] heartbeat: b\n[14:00:10.0] frame loop stalled 5s; gc 1/1/1\n")
+        watch = pw.HangWatch(d)
+        hangs, recovered = [], []
+        watch.on_hang = lambda pid, age, name: hangs.append(pid)
+        watch.on_recover = lambda pid, name: recovered.append(pid)
+        games = [(26844, started, 99.0, "cmd")]
+        watch.tick(time.time(), games)
+        with open(path, "a") as f:
+            f.write("[14:00:12.0] frame loop resumed\n[14:00:15.0] heartbeat: c\n")
+        watch.tick(time.time(), games)
+        self.assertEqual(([26844], [26844]), (hangs, recovered))
+        self.assertEqual(set(), watch.reported)
 
     def test_a_plugin_switched_off_on_purpose_is_not_a_hang(self):
         self.assertFalse(pw.hang_verdict(file_age=500, has_heartbeat=True, last_line="[23:41:56.973] unloading"))

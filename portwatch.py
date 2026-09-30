@@ -422,6 +422,7 @@ class StallWatch:
 DOCTOR_DIAG_DIR = os.path.join(CFG, "XIVDoctor", "diag")
 HANG_AFTER = 150          # the ceiling: two missed beats of the one-minute cadence older plugin builds keep
 HANG_FLOOR = 20           # four missed beats of the five-second cadence: a hang in a duty gets force-quit within a minute
+STALL_AFTER = 5           # the plugin's own timer thread saying the frame loop is dead needs no inference: sample at once
 START_MATCH_SLACK = 20    # the diag name carries Wine's idea of the start time
 
 
@@ -472,7 +473,7 @@ def hang_verdict(file_age, has_heartbeat, last_line, threshold=HANG_AFTER):
         return False
     stalled = stalled_seconds(last_line)
     if stalled is not None:
-        return stalled >= threshold
+        return stalled >= STALL_AFTER
     return file_age > threshold
 
 
@@ -497,7 +498,7 @@ class HangWatch:
             if started is None or now - started > 12 * 3600:
                 continue
             pid = match_game(started, starts)
-            if pid is None or pid in self.reported:
+            if pid is None:
                 continue
             path = os.path.join(self.directory, name)
             try:
@@ -508,9 +509,21 @@ class HangWatch:
                 continue
             lines = tail.splitlines()
             last = lines[-1] if lines else ""
-            if hang_verdict(age, "heartbeat:" in tail, last, beat_threshold(tail)):
+            frozen = hang_verdict(age, "heartbeat:" in tail, last, beat_threshold(tail))
+            if pid in self.reported:
+                # a stall that ended on its own was a long hitch, not a hang: take the note back
+                if not frozen and stalled_seconds(last) is None and age < HANG_FLOOR:
+                    self.reported.discard(pid)
+                    self.on_recover(pid, name)
+                continue
+            if frozen:
                 self.reported.add(pid)
                 self.on_hang(pid, max(age, stalled_seconds(last) or 0), name)
+
+    def on_recover(self, pid, name):
+        boot_note(f"pid {pid}: frame loop resumed; that freeze ended on its own ({name})")
+        if not self.reported:
+            set_attention("GameWindow", None)
 
     def on_hang(self, pid, age, name):
         msg = f"pid {pid}: HANG - no plugin heartbeat for {age:.0f}s while the process lives ({name})"
