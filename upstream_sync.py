@@ -106,6 +106,46 @@ def artifact_name(plugin, sha):
     return f"{plugin}-{sha}"
 
 
+SOLVER = os.path.expanduser("~/Projects/gbr-fork/GatherBuddy/bin/Release/raphael-cli.exe")
+SOLVER_SOURCE = "GatherBuddyReborn solver"
+
+
+def sha256_of(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def solver_sha_from_sums(sums_text):
+    for line in sums_text.splitlines():
+        digest, _, name = line.partition("  ")
+        if name.strip().lstrip("./") == "raphael-cli.exe":
+            return digest.strip()
+    return None
+
+
+def check_solver(state, path=SOLVER, attention_path=None):
+    """GatherBuddy's quality solver is a separate binary beside the plugin; without it, or with one that is not what the
+    last installed build shipped, the recipes that need it are skipped with only a passing chat line. Returns the problem."""
+    expected = (state.get("GatherBuddyReborn") or {}).get("solver_sha256")
+    if not os.path.exists(path):
+        problem = "the Raphael solver (raphael-cli.exe) is missing next to GatherBuddy Reborn; recipes that need it are skipped"
+    elif expected and sha256_of(path) != expected:
+        problem = "the Raphael solver beside GatherBuddy Reborn is not the one its last installed build shipped; recipes that need it may fail"
+    else:
+        problem = None
+    st = state.setdefault(SOLVER_SOURCE, {})
+    if problem:
+        st["note"] = problem
+    else:
+        st.pop("note", None)
+    set_attention(SOLVER_SOURCE, problem, *([attention_path] if attention_path else []))
+    return problem
+
+
 def verify_hashes(sums_text, read_file):
     """Every line of SHA256SUMS must match the file it names; returns the list of mismatches."""
     bad = []
@@ -480,6 +520,9 @@ def finish_install(plugin, st, pending):
         log(f"{name}: build {pending['sha'][:7]} ready; waiting for the game to close before installing")
         return
     install(plugin, pending["dest"])
+    sums = os.path.join(pending["dest"], "SHA256SUMS")
+    if os.path.exists(sums) and solver_sha_from_sums(open(sums).read()) is not None:
+        st["solver_sha256"] = solver_sha_from_sums(open(sums).read())
     note = sync_clone(plugin, pending["sha"])
     shutil.rmtree(pending["dest"], ignore_errors=True)
     st["synced_upstream"] = pending["upstream"]
@@ -530,6 +573,11 @@ def main():
                 check_policy(state, pol, pv)
         except Exception as ex:
             log(f"{pol['name']} policy check: {type(ex).__name__}: {ex}")
+    try:
+        if check_solver(state):
+            log(f"solver check: {state[SOLVER_SOURCE]['note']}")
+    except Exception as ex:
+        log(f"solver check: {type(ex).__name__}: {ex}")
     save_state(state)
     for plugin in PLUGINS:
         try:

@@ -231,6 +231,26 @@ class AttentionNotes(unittest.TestCase):
         self.assertEqual("the parser stalled at 10:02", att.event_note("the parser stalled", None, when))
 
 
+class SolverCheck(unittest.TestCase):
+    def test_a_missing_or_foreign_solver_leaves_a_note_and_a_matching_one_clears_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            exe, att = os.path.join(d, "raphael-cli.exe"), os.path.join(d, "attention.txt")
+            state = {"GatherBuddyReborn": {}}
+            self.assertIn("missing", us.check_solver(state, exe, att))
+            self.assertIn("missing", state[us.SOLVER_SOURCE]["note"])
+            with open(exe, "wb") as f:
+                f.write(b"solver")
+            self.assertIsNone(us.check_solver(state, exe, att))
+            self.assertNotIn("note", state[us.SOLVER_SOURCE])
+            self.assertFalse(os.path.exists(att))
+            state["GatherBuddyReborn"]["solver_sha256"] = "0" * 64
+            self.assertIn("not the one", us.check_solver(state, exe, att))
+            state["GatherBuddyReborn"]["solver_sha256"] = us.sha256_of(exe)
+            self.assertIsNone(us.check_solver(state, exe, att))
+        self.assertEqual("abc", us.solver_sha_from_sums("abc  ./raphael-cli.exe\ndef  ./GatherBuddyReborn.dll\n"))
+        self.assertIsNone(us.solver_sha_from_sums("def  ./GatherBuddyReborn.dll\n"))
+
+
 class StandingNotes(unittest.TestCase):
     def test_notes_kept_in_state_are_reasserted_and_dropped_when_solved(self):
         state = {"IINACT": {"failed_upstream": "abc", "note": "upstream sync needs a hand (workflow run 1 failure)"},
