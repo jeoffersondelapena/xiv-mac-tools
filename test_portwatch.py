@@ -526,6 +526,23 @@ class HangDetection(unittest.TestCase):
         self.assertFalse(pw.hang_verdict(file_age=40, has_heartbeat=True, last_line="heartbeat"))
         self.assertFalse(pw.hang_verdict(file_age=500, has_heartbeat=False, last_line="[00:25:41] unscrambler: ..."))
 
+    def test_the_threshold_follows_the_plugins_own_beat_spacing(self):
+        five = "[14:00:00.001] heartbeat: a\n[14:00:05.002] heartbeat: b\n"
+        minute = "[14:00:00.001] heartbeat: a\n[14:01:00.002] heartbeat: b\n"
+        self.assertEqual(20, pw.beat_threshold(five))
+        self.assertEqual(150, pw.beat_threshold(minute))
+        self.assertEqual(150, pw.beat_threshold("[14:00:00.001] heartbeat: only one\n"))
+        self.assertEqual(20, pw.beat_threshold("[23:59:58.000] heartbeat: a\n[00:00:03.000] heartbeat: b\n"))
+
+    def test_a_fast_beat_makes_a_short_silence_a_hang(self):
+        self.assertTrue(pw.hang_verdict(file_age=25, has_heartbeat=True, last_line="[14:00:05.002] heartbeat: b", threshold=20))
+        self.assertFalse(pw.hang_verdict(file_age=12, has_heartbeat=True, last_line="[14:00:05.002] heartbeat: b", threshold=20))
+
+    def test_the_timer_threads_stall_lines_count_even_though_they_keep_the_file_fresh(self):
+        self.assertFalse(pw.hang_verdict(file_age=1, has_heartbeat=True, last_line="[14:00:20.0] frame loop stalled 15s; gc 1/1/1", threshold=20))
+        self.assertTrue(pw.hang_verdict(file_age=1, has_heartbeat=True, last_line="[14:00:30.0] frame loop stalled 25s; gc 1/1/1", threshold=20))
+        self.assertFalse(pw.hang_verdict(file_age=1, has_heartbeat=True, last_line="[14:00:40.0] frame loop resumed", threshold=20))
+
     def test_a_plugin_switched_off_on_purpose_is_not_a_hang(self):
         self.assertFalse(pw.hang_verdict(file_age=500, has_heartbeat=True, last_line="[23:41:56.973] unloading"))
         self.assertFalse(pw.hang_verdict(file_age=500, has_heartbeat=True, last_line="[23:41:56.973] plugin unloading"))

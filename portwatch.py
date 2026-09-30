@@ -420,7 +420,8 @@ class StallWatch:
 # thread spinning in Rosetta's exception server, heartbeats simply stopped). IINACT carried the beat until
 # 2026-09-30; a parser that failed to load switched freeze detection off, and XIV Doctor is always on.
 DOCTOR_DIAG_DIR = os.path.join(CFG, "XIVDoctor", "diag")
-HANG_AFTER = 150          # two missed heartbeats
+HANG_AFTER = 150          # the ceiling: two missed beats of the one-minute cadence older plugin builds keep
+HANG_FLOOR = 20           # four missed beats of the five-second cadence: a hang in a duty gets force-quit within a minute
 START_MATCH_SLACK = 20    # the diag name carries Wine's idea of the start time
 
 
@@ -447,12 +448,32 @@ def teardown_note(last_exit_at, now):
     return None if last_exit_at is None else f"wineserver exited {now - last_exit_at:.0f}s after the last window"
 
 
-def hang_verdict(file_age, has_heartbeat, last_line):
-    """A window that has produced heartbeats, then nothing for HANG_AFTER seconds, has frozen.
+def beat_threshold(tail):
+    """Seconds of silence that mean a freeze, read off the plugin's own beat spacing: four missed beats,
+    never under the floor nor over the ceiling. One beat or none says nothing about the spacing."""
+    stamps = re.findall(r"^\[(\d\d):(\d\d):(\d\d)\.\d+\] heartbeat:", tail, re.M)
+    if len(stamps) < 2:
+        return HANG_AFTER
+    a, b = (int(h) * 3600 + int(m) * 60 + int(s) for h, m, s in stamps[-2:])
+    return min(HANG_AFTER, max(HANG_FLOOR, 4 * ((b - a) % 86400)))
+
+
+def stalled_seconds(last_line):
+    """The plugin's timer thread reports a frame loop that stopped ticking; None when the last line is not such a report."""
+    m = re.search(r"frame loop stalled (\d+)s", last_line)
+    return int(m.group(1)) if m else None
+
+
+def hang_verdict(file_age, has_heartbeat, last_line, threshold=HANG_AFTER):
+    """A window that has produced heartbeats, then nothing for the threshold, has frozen; so has one whose timer
+    thread says the frame loop has been stalled that long, even though that keeps the file fresh.
     A file ending in 'unloading' is the plugin switched off on purpose, not a hang."""
     if not has_heartbeat or "unloading" in last_line:
         return False
-    return file_age > HANG_AFTER
+    stalled = stalled_seconds(last_line)
+    if stalled is not None:
+        return stalled >= threshold
+    return file_age > threshold
 
 
 class HangWatch:
@@ -486,15 +507,16 @@ class HangWatch:
             except OSError:
                 continue
             lines = tail.splitlines()
-            if hang_verdict(age, "heartbeat:" in tail, lines[-1] if lines else ""):
+            last = lines[-1] if lines else ""
+            if hang_verdict(age, "heartbeat:" in tail, last, beat_threshold(tail)):
                 self.reported.add(pid)
-                self.on_hang(pid, age, name)
+                self.on_hang(pid, max(age, stalled_seconds(last) or 0), name)
 
     def on_hang(self, pid, age, name):
         msg = f"pid {pid}: HANG - no plugin heartbeat for {age:.0f}s while the process lives ({name})"
         boot_note(msg)
         out = os.path.join(BASE, "wedge-watch", f"hang-sample-{datetime.datetime.now():%H%M%S}-{pid}.txt")
-        subprocess.run(["sample", str(pid), "5", "-file", out], capture_output=True)
+        subprocess.run(["sample", str(pid), "3", "-file", out], capture_output=True)
         log(f"thread sample: {out}")
         notify("Game window frozen", f"pid {pid}: no plugin heartbeat for {age:.0f}s. Force Quit it; leftovers are cleared for you.")
         set_attention("GameWindow", event_note(f"a game window froze (no plugin heartbeat for {age:.0f} s)", out))
