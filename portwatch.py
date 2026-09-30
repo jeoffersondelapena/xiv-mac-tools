@@ -1228,6 +1228,168 @@ class ServerSweep:
             f"{len(dead)} leftover process(es)); the next launch starts fresh")
 
 
+# per-window memory breakdown, once a minute while a game runs; the 2026-09-30 freezes left no such data
+MEMORY_LOG = os.path.join(BASE, "wedge-watch", "memory.log")
+MEMORY_EVERY = 60
+MEMORY_SLOW = 3.0          # a breakdown that takes this long is a load on the game itself: back off
+MEMORY_LOG_MAX = 5 * 1024 * 1024
+GAME_EXE = "ffxiv_dx11.exe"
+
+
+def wine_exe(cmd):
+    """The executable's own name from a Wine command line, else None."""
+    m = WINE_CMD_RE.match(cmd)
+    return re.split(r"[\\/]", m.group(0))[-1] if m else None
+
+
+def summarise_footprint(report, exes, keep=8):
+    """From `footprint --swapped -j`: each game window's footprint, how much of it is swapped or compressed, and its
+    largest parts; every other Wine-side process summed per executable. MB throughout. A part's 'dirty' figure
+    already includes what is swapped."""
+    unit = report.get("bytes per unit", 1)
+
+    def mb(n):
+        return round(n * unit / 1048576)
+
+    windows, helpers = [], {}
+    for proc in report.get("processes", []):
+        exe = exes.get(proc.get("pid"))
+        if exe is None:
+            continue
+        if exe.lower() != GAME_EXE:
+            helpers[exe] = helpers.get(exe, 0) + mb(proc.get("footprint", 0))
+            continue
+        parts = {name: mb(c.get("dirty", 0)) for name, c in proc.get("categories", {}).items()}
+        windows.append({"pid": proc["pid"], "footprint": mb(proc.get("footprint", 0)),
+                        "swapped": mb(sum(c.get("swapped", 0) for c in proc.get("categories", {}).values())),
+                        "parts": dict(sorted(((n, v) for n, v in parts.items() if v > 0), key=lambda kv: -kv[1])[:keep])})
+    return windows, helpers
+
+
+def doctor_memory(tail):
+    """The newest 'memory:' line XIV Doctor wrote, as numbers; None without one."""
+    found = re.findall(r"memory: managed (\d+) MB, committed (\d+) MB, process (\d+) MB; players (\d+); territory (\d+)", tail)
+    if not found:
+        return None
+    managed, committed, process, players, territory = map(int, found[-1])
+    return {"managed": managed, "committed": committed, "process": process, "players": players, "territory": territory}
+
+
+def growth(first, last):
+    """Parts of a window ordered by how much they grew between two records, largest first."""
+    names = set(first.get("parts", {})) | set(last.get("parts", {}))
+    moved = [(n, first.get("parts", {}).get(n, 0), last.get("parts", {}).get(n, 0)) for n in names]
+    return sorted(moved, key=lambda m: m[1] - m[2])
+
+
+def memory_report(records):
+    """Readable account of memory.log: per window, what it started at, what it ended at and which parts grew."""
+    by_pid = {}
+    for rec in records:
+        for w in rec.get("windows", []):
+            by_pid.setdefault(w["pid"], []).append((rec, w))
+    if not by_pid:
+        return "no game window has been recorded yet\n"
+    out = []
+    for pid, rows in by_pid.items():
+        (r0, w0), (r1, w1) = rows[0], rows[-1]
+        peak = max(w["footprint"] for _, w in rows)
+        out.append(f"window pid {pid}: {r0['t']} to {r1['t']}, {len(rows)} readings")
+        out.append(f"  footprint {w0['footprint'] / 1024:.1f} GB -> {w1['footprint'] / 1024:.1f} GB (peak {peak / 1024:.1f}), "
+                   f"swapped or compressed at the end {w1['swapped'] / 1024:.1f} GB")
+        for name, a, b in growth(w0, w1)[:6]:
+            out.append(f"    {name}: {a} MB -> {b} MB ({b - a:+d})")
+        d0, d1 = w0.get("doctor"), w1.get("doctor")
+        if d0 and d1:
+            out.append(f"  plugins' managed heap {d0['managed']} MB -> {d1['managed']} MB; players in view {d0['players']} -> {d1['players']}")
+    helpers = records[-1].get("helpers", {})
+    if helpers:
+        top = sorted(helpers.items(), key=lambda kv: -kv[1])[:6]
+        out.append("other processes at the last reading: " + ", ".join(f"{n} {v} MB" for n, v in top)
+                   + f" (all {sum(helpers.values())} MB)")
+    worst = max(records, key=lambda r: (r.get("pressure") or 0, r.get("swap_mb") or 0))
+    out.append(f"highest memory pressure seen: {PRESSURE.get(worst.get('pressure'), 'unknown')}, swap {worst.get('swap_mb', 0) / 1024:.1f} GB used, at {worst['t']}")
+    return "\n".join(out) + "\n"
+
+
+class MemoryLog:
+    def __init__(self, path=MEMORY_LOG, directory=DOCTOR_DIAG_DIR):
+        self.path = path
+        self.directory = directory
+        self.every = MEMORY_EVERY
+        self.last = 0.0
+
+    def tick(self, now, games):
+        if not games or now - self.last < self.every:
+            return
+        self.last = now
+        try:
+            record = self.measure(now, games)
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            log(f"memory reading failed: {e}")
+            return
+        if record["took"] > MEMORY_SLOW:
+            self.every = min(self.every * 2, 900)
+            log(f"a memory reading took {record['took']:.1f}s; next one in {self.every}s")
+        self.write(record)
+
+    def measure(self, now, games):
+        exes = {pid: wine_exe(cmd) for pid, cmd in wine_procs()}
+        exes = {pid: exe for pid, exe in exes.items() if exe}
+        began = time.time()
+        out = self.path + ".footprint.json"
+        args = [a for pid in exes for a in ("-p", str(pid))]
+        subprocess.run(["footprint", "--swapped", "-j", out, *args], capture_output=True, timeout=60)
+        with open(out) as f:
+            report = json.load(f)
+        os.remove(out)
+        windows, helpers = summarise_footprint(report, exes)
+        starts = {pid: st for pid, st, _, _ in games}
+        for w in windows:
+            w["up_min"] = round((now - starts[w["pid"]]) / 60) if w["pid"] in starts else None
+            w["doctor"] = self.doctor(starts.get(w["pid"]))
+        level, _ = memory_facts()
+        swap = re.search(r"used = ([\d.]+)M", subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True).stdout)
+        return {"t": datetime.datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"), "pressure": level,
+                "swap_mb": round(float(swap.group(1))) if swap else None, "windows": windows, "helpers": helpers,
+                "took": round(time.time() - began, 2)}
+
+    def doctor(self, started):
+        if started is None:
+            return None
+        try:
+            for name in os.listdir(self.directory):
+                at = diag_start_time(name) if name.startswith("doctor-") else None
+                if at is not None and abs(at - started) <= START_MATCH_SLACK:
+                    return doctor_memory(tail_of(os.path.join(self.directory, name), 8192))
+        except OSError:
+            pass
+        return None
+
+    def write(self, record):
+        try:
+            if os.path.exists(self.path) and os.path.getsize(self.path) > MEMORY_LOG_MAX:
+                os.replace(self.path, self.path.replace(".log", ".old.log"))
+            with open(self.path, "a") as f:
+                f.write(json.dumps(record) + "\n")
+        except OSError:
+            pass
+
+
+def read_memory_log(path=MEMORY_LOG):
+    records = []
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    records.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    return records
+
+
 def wineserver_alive():
     out = subprocess.run(["ps", "-Ao", "command="], capture_output=True, text=True).stdout
     return any(is_wineserver_line(line) for line in out.splitlines())
@@ -1305,6 +1467,7 @@ def watch():
     stall_watch = StallWatch()
     hang_watch = HangWatch()
     exit_watch = ExitWatch()
+    memory_log = MemoryLog()
     server_sweep = ServerSweep()
     last_exit_at = None
     while True:
@@ -1313,6 +1476,7 @@ def watch():
         stall_watch.tick(time.time(), running_now)
         hang_watch.tick(time.time(), running_now)
         exit_watch.tick(time.time(), running_now)
+        memory_log.tick(time.time(), running_now)
         sweep_orphan_renderers(kill=True, say=log)
         server_sweep.tick(time.time(), running_now)
         held = bound_ports(live)
@@ -1407,6 +1571,8 @@ if __name__ == "__main__":
             print("meter settings reconciled across slots")
     elif "--sample" in sys.argv:
         sample_games()
+    elif "--memory" in sys.argv:
+        print(memory_report(read_memory_log()), end="")
     elif "--orphans" in sys.argv or "--kill-orphans" in sys.argv:
         status()
         print()

@@ -770,6 +770,130 @@ class MemoryFacts(unittest.TestCase):
         self.assertFalse(pw.sample_worthwhile(4))
 
 
+class MemoryRecord(unittest.TestCase):
+    MB = 1048576
+
+    def report(self):
+        def part(dirty, swapped=0):
+            return {"dirty": dirty * self.MB, "swapped": swapped * self.MB, "clean": 0, "reclaimable": 0, "wired": 0, "regions": 1}
+        return {"bytes per unit": 1, "processes": [
+            {"pid": 26630, "name": "ffxiv_dx11.exe", "footprint": 11700 * self.MB,
+             "categories": {"untagged (VM_ALLOCATE)": part(6100, 2500), "IOAccelerator (graphics)": part(5200, 100), "MALLOC_LARGE": part(400), "__TEXT": part(0)}},
+            {"pid": 27559, "name": "Browsingway.Renderer.exe", "footprint": 310 * self.MB, "categories": {}},
+            {"pid": 27565, "name": "Browsingway.Renderer.exe", "footprint": 290 * self.MB, "categories": {}},
+            {"pid": 26575, "name": "services.exe", "footprint": 12 * self.MB, "categories": {}},
+            {"pid": 999, "name": "Finder", "footprint": 400 * self.MB, "categories": {}}]}
+
+    EXES = {26630: "ffxiv_dx11.exe", 27559: "Browsingway.Renderer.exe", 27565: "Browsingway.Renderer.exe", 26575: "services.exe"}
+
+    def test_the_executable_name_is_read_off_a_wine_command_line(self):
+        self.assertEqual("ffxiv_dx11.exe", pw.wine_exe("C:\\Program Files (x86)\\SquareEnix\\game\\ffxiv_dx11.exe DEV.TestSID=abc"))
+        self.assertEqual("Browsingway.Renderer.exe", pw.wine_exe("/Users/x/Projects/browsingway-fork/out/renderer/Browsingway.Renderer.exe --type=gpu-process"))
+        self.assertIsNone(pw.wine_exe("/usr/bin/python3 portwatch.py --watch"))
+
+    def test_a_window_is_split_into_its_largest_parts_and_the_rest_summed_per_executable(self):
+        windows, helpers = pw.summarise_footprint(self.report(), self.EXES)
+        self.assertEqual(1, len(windows))
+        w = windows[0]
+        self.assertEqual((26630, 11700, 2600), (w["pid"], w["footprint"], w["swapped"]))
+        self.assertEqual(["untagged (VM_ALLOCATE)", "IOAccelerator (graphics)", "MALLOC_LARGE"], list(w["parts"]))
+        self.assertEqual(6100, w["parts"]["untagged (VM_ALLOCATE)"])
+        self.assertEqual({"Browsingway.Renderer.exe": 600, "services.exe": 12}, helpers)
+
+    def test_the_plugins_own_memory_line_is_read(self):
+        tail = "[x] heartbeat: a\n[x] memory: managed 700 MB, committed 900 MB, process 9000 MB; players 3; territory 129\n[x] memory: managed 812 MB, committed 1490 MB, process 9800 MB; players 23; territory 131\n"
+        self.assertEqual({"managed": 812, "committed": 1490, "process": 9800, "players": 23, "territory": 131}, pw.doctor_memory(tail))
+        self.assertIsNone(pw.doctor_memory("[x] heartbeat: a\n"))
+
+    def records(self):
+        first = {"t": "2026-10-01 19:00:00", "pressure": 1, "swap_mb": 500, "took": 0.4, "helpers": {"Browsingway.Renderer.exe": 500},
+                 "windows": [{"pid": 26630, "footprint": 6000, "swapped": 0, "up_min": 2, "doctor": {"managed": 600, "committed": 800, "process": 5000, "players": 4, "territory": 129},
+                              "parts": {"untagged (VM_ALLOCATE)": 3500, "IOAccelerator (graphics)": 2000, "MALLOC_LARGE": 400}}]}
+        last = {"t": "2026-10-01 22:00:00", "pressure": 2, "swap_mb": 2900, "took": 0.6, "helpers": {"Browsingway.Renderer.exe": 640, "services.exe": 12},
+                "windows": [{"pid": 26630, "footprint": 11700, "swapped": 2600, "up_min": 182, "doctor": {"managed": 650, "committed": 900, "process": 9000, "players": 41, "territory": 131},
+                             "parts": {"untagged (VM_ALLOCATE)": 4100, "IOAccelerator (graphics)": 7000, "MALLOC_LARGE": 380, "stack": 20}}]}
+        return [first, last]
+
+    def test_parts_are_ordered_by_how_much_they_grew(self):
+        first, last = (r["windows"][0] for r in self.records())
+        self.assertEqual([("IOAccelerator (graphics)", 2000, 7000), ("untagged (VM_ALLOCATE)", 3500, 4100), ("stack", 0, 20), ("MALLOC_LARGE", 400, 380)],
+                         pw.growth(first, last))
+
+    def test_the_report_says_what_grew(self):
+        text = pw.memory_report(self.records())
+        self.assertIn("footprint 5.9 GB -> 11.4 GB (peak 11.4)", text)
+        self.assertIn("IOAccelerator (graphics): 2000 MB -> 7000 MB (+5000)", text)
+        self.assertLess(text.index("IOAccelerator"), text.index("untagged"))
+        self.assertIn("plugins' managed heap 600 MB -> 650 MB; players in view 4 -> 41", text)
+        self.assertIn("Browsingway.Renderer.exe 640 MB", text)
+        self.assertIn("highest memory pressure seen: warning, swap 2.8 GB used, at 2026-10-01 22:00:00", text)
+        self.assertEqual("no game window has been recorded yet\n", pw.memory_report([]))
+
+    def test_a_reading_is_taken_once_a_minute_and_only_while_a_game_runs(self):
+        import tempfile
+        log = pw.MemoryLog(os.path.join(tempfile.mkdtemp(), "memory.log"))
+        taken = []
+        log.measure = lambda now, games: taken.append(now) or {"t": "x", "took": 0.2, "windows": [], "helpers": {}}
+        games = [(26630, 0.0, 50.0, "cmd")]
+        log.tick(1000.0, [])
+        log.tick(1000.0, games)
+        log.tick(1030.0, games)
+        log.tick(1061.0, games)
+        self.assertEqual([1000.0, 1061.0], taken)
+        self.assertEqual(2, len(pw.read_memory_log(log.path)))
+
+    def test_a_slow_reading_makes_the_next_one_wait_longer(self):
+        import tempfile
+        log = pw.MemoryLog(os.path.join(tempfile.mkdtemp(), "memory.log"))
+        log.measure = lambda now, games: {"t": "x", "took": 4.5, "windows": [], "helpers": {}}
+        said = []
+        saved, pw.log = pw.log, said.append
+        try:
+            log.tick(1000.0, [(26630, 0.0, 50.0, "cmd")])
+        finally:
+            pw.log = saved
+        self.assertEqual(120, log.every)
+        self.assertIn("next one in 120s", said[0])
+
+    def test_a_failed_reading_is_logged_and_nothing_is_written(self):
+        import tempfile
+        log = pw.MemoryLog(os.path.join(tempfile.mkdtemp(), "memory.log"))
+        def broken(now, games):
+            raise OSError("footprint not found")
+        log.measure = broken
+        said = []
+        saved, pw.log = pw.log, said.append
+        try:
+            log.tick(1000.0, [(26630, 0.0, 50.0, "cmd")])
+        finally:
+            pw.log = saved
+        self.assertEqual(["memory reading failed: footprint not found"], said)
+        self.assertEqual([], pw.read_memory_log(log.path))
+
+    def test_a_damaged_line_in_the_log_is_skipped(self):
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(), "memory.log")
+        with open(path, "w") as f:
+            f.write(json.dumps(self.records()[0]) + "\n{ cut off\n" + json.dumps(self.records()[1]) + "\n")
+        self.assertEqual(2, len(pw.read_memory_log(path)))
+
+    def test_a_real_reading_of_this_process_has_the_expected_shape(self):
+        import tempfile
+        me = os.getpid()
+        log = pw.MemoryLog(os.path.join(tempfile.mkdtemp(), "memory.log"), tempfile.mkdtemp())
+        saved = pw.wine_procs
+        pw.wine_procs = lambda: [(me, "C:\\game\\ffxiv_dx11.exe")]
+        try:
+            record = log.measure(1000.0, [(me, 940.0, 1.0, "cmd")])
+        finally:
+            pw.wine_procs = saved
+        self.assertEqual(me, record["windows"][0]["pid"])
+        self.assertGreater(record["windows"][0]["footprint"], 0)
+        self.assertTrue(record["windows"][0]["parts"])
+        self.assertEqual(1, record["windows"][0]["up_min"])
+        self.assertFalse(os.path.exists(log.path + ".footprint.json"))
+
+
 class TeardownTiming(unittest.TestCase):
     def test_reports_how_long_the_server_outlived_the_last_window(self):
         self.assertEqual("wineserver exited 7s after the last window", pw.teardown_note(1000.0, 1007.4))
