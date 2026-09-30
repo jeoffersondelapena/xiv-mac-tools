@@ -526,13 +526,153 @@ class HangWatch:
             set_attention("GameWindow", None)
 
     def on_hang(self, pid, age, name):
-        msg = f"pid {pid}: HANG - no plugin heartbeat for {age:.0f}s while the process lives ({name})"
-        boot_note(msg)
-        out = os.path.join(BASE, "wedge-watch", f"hang-sample-{datetime.datetime.now():%H%M%S}-{pid}.txt")
-        subprocess.run(["sample", str(pid), "3", "-file", out], capture_output=True)
-        log(f"thread sample: {out}")
-        notify("Game window frozen", f"pid {pid}: no plugin heartbeat for {age:.0f}s. Force Quit it; leftovers are cleared for you.")
-        set_attention("GameWindow", event_note(f"a game window froze (no plugin heartbeat for {age:.0f} s)", out))
+        level, memory = memory_facts()
+        boot_note(f"pid {pid}: HANG - no plugin heartbeat for {age:.0f}s while the process lives ({name}); {memory}")
+        out = None
+        if sample_worthwhile(level):
+            out = os.path.join(BASE, "wedge-watch", f"hang-sample-{datetime.datetime.now():%H%M%S}-{pid}.txt")
+            subprocess.run(["sample", str(pid), "3", "-file", out], capture_output=True)
+            log(f"thread sample: {out}")
+        else:
+            log("no thread sample: the machine is short of memory, and sampling would hold the game still for longer")
+        notify("Game window frozen", f"pid {pid}: no plugin heartbeat for {age:.0f}s; {memory}. Force Quit it; leftovers are cleared for you.")
+        set_attention("GameWindow", event_note(f"a game window froze (no plugin heartbeat for {age:.0f} s; {memory})", out))
+
+
+# A machine out of memory holds a game still for minutes and looks the same from outside as a hang. On 2026-09-30
+# a window at 12 GB ran beside a second one on 18 GB, fell silent for 136 s and lost its connection. `sample` got
+# 106-200 of its 3000 samples from it, and a further 15 s stall fell inside the second capture; under pressure the
+# two numbers below are the capture.
+PRESSURE = {1: "normal", 2: "warning", 4: "critical"}
+
+
+def describe_memory(level_text, swap_text):
+    """(pressure level or None, 'memory pressure <name>, swap X of Y GB used') from the two sysctl values."""
+    try:
+        level = int(level_text.strip())
+    except (ValueError, AttributeError):
+        level = None
+    parts = [f"memory pressure {PRESSURE.get(level, 'unknown')}"]
+    m = re.search(r"total = ([\d.]+)M\s+used = ([\d.]+)M", swap_text or "")
+    if m:
+        parts.append(f"swap {float(m.group(2)) / 1024:.1f} of {float(m.group(1)) / 1024:.1f} GB used")
+    return level, ", ".join(parts)
+
+
+def memory_facts():
+    def read(name):
+        return subprocess.run(["sysctl", "-n", name], capture_output=True, text=True).stdout
+    return describe_memory(read("kern.memorystatus_vm_pressure_level"), read("vm.swapusage"))
+
+
+def sample_worthwhile(level):
+    return level not in (2, 4)
+
+
+# A game that began to close and never finished. XIV Doctor's last line says the game itself is closing (a plugin
+# switched off writes plain 'unloading'), nothing follows it, and the process is still there. 58 normal exits in
+# September took at most 22 s. On 2026-09-30 22:44 one stopped while unloading a plugin and sat at two cores for
+# fifteen minutes; nothing noticed, because HangWatch reads 'unloading' as intentional.
+EXIT_STUCK_AFTER = 120
+DALAMUD_LOG = os.path.join(BASE, "logs", "dalamud.log")
+
+
+def exit_stuck_verdict(last_line, file_age, threshold=EXIT_STUCK_AFTER):
+    return "game closing" in last_line and file_age >= threshold
+
+
+def exit_report(pid, age, memory, diag_tail, dalamud_tail):
+    """What a stuck close leaves to look at: the last plugin lines say where the shutdown stopped."""
+    unload = [l for l in dalamud_tail.splitlines() if "[LocalPlugin]" in l or "Framework::Destroy" in l][-6:]
+    return "\n".join([f"pid {pid} was still running {age:.0f} s after the game began to close, and was ended.", memory, "",
+                      "last lines of the window's XIV Doctor log:", *diag_tail.splitlines()[-6:], "",
+                      "last plugin load and unload lines of dalamud.log (shared by all windows):", *unload]) + "\n"
+
+
+def process_alive(pid):
+    """A process that has exited but was not yet collected by its parent still has a pid; it is not alive."""
+    stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return bool(stat) and not stat.startswith("Z")
+
+
+def end_process(pid, wait=3):
+    """TERM, then KILL: the game stuck on 2026-09-30 ignored TERM for eight seconds."""
+    subprocess.run(["kill", "-TERM", str(pid)], capture_output=True)
+    deadline = time.time() + wait
+    while time.time() < deadline and process_alive(pid):
+        time.sleep(0.5)
+    if process_alive(pid):
+        subprocess.run(["kill", "-9", str(pid)], capture_output=True)
+        time.sleep(1)
+    return not process_alive(pid)
+
+
+def tail_of(path, size=8192):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - size))
+            return f.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+class ExitWatch:
+    def __init__(self, directory=DOCTOR_DIAG_DIR):
+        self.directory = directory
+        self.closing = set()
+        self.ended = set()
+
+    def tick(self, now, games):
+        starts = {pid: st for pid, st, _, _ in games}
+        for pid in [p for p in self.closing if p not in starts]:
+            self.closing.discard(pid)
+            if pid in self.ended:
+                self.ended.discard(pid)
+            else:
+                self.on_clean_exit(pid)
+        try:
+            names = [n for n in os.listdir(self.directory) if n.startswith("doctor-")]
+        except OSError:
+            return
+        for name in names:
+            started = diag_start_time(name)
+            if started is None or now - started > 7 * 86400:
+                continue
+            pid = match_game(started, starts)
+            if pid is None or pid in self.ended:
+                continue
+            path = os.path.join(self.directory, name)
+            try:
+                age = now - os.path.getmtime(path)
+            except OSError:
+                continue
+            lines = tail_of(path, 2048).splitlines()
+            last = lines[-1] if lines else ""
+            if "game closing" not in last:
+                continue
+            self.closing.add(pid)
+            if exit_stuck_verdict(last, age):
+                self.ended.add(pid)
+                self.on_stuck(pid, age, path)
+
+    def on_clean_exit(self, pid):
+        set_attention("GameExit", None)
+
+    def on_stuck(self, pid, age, diag_path):
+        _, memory = memory_facts()
+        out = os.path.join(BASE, "wedge-watch", f"exit-stuck-{datetime.datetime.now():%H%M%S}-{pid}.txt")
+        try:
+            with open(out, "w") as f:
+                f.write(exit_report(pid, age, memory, tail_of(diag_path, 2048), tail_of(DALAMUD_LOG, 65536)))
+        except OSError:
+            out = None
+        gone = end_process(pid)
+        boot_note(f"pid {pid}: STUCK CLOSING - still running {age:.0f}s after the game began to close; "
+                  f"{'ended' if gone else 'could not be ended'}; {memory}")
+        notify("Game stuck closing", f"A game window had been closing for {age:.0f}s and was ended. Nothing else to do.")
+        set_attention("GameExit", event_note(f"a game window was stuck closing for {age:.0f} s and was ended", out))
+
 
 def notify(title, text):
     subprocess.run(["osascript", "-e", f'display notification "{text}" with title "{title}"'],
@@ -1164,6 +1304,7 @@ def watch():
     two_servers_noted = False
     stall_watch = StallWatch()
     hang_watch = HangWatch()
+    exit_watch = ExitWatch()
     server_sweep = ServerSweep()
     last_exit_at = None
     while True:
@@ -1171,6 +1312,7 @@ def watch():
         running_now = procs("ffxiv_dx11.exe")
         stall_watch.tick(time.time(), running_now)
         hang_watch.tick(time.time(), running_now)
+        exit_watch.tick(time.time(), running_now)
         sweep_orphan_renderers(kill=True, say=log)
         server_sweep.tick(time.time(), running_now)
         held = bound_ports(live)

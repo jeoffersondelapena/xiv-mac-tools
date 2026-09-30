@@ -30,7 +30,7 @@ LOG_SOURCES = ("dalamud.log", "dalamud.old.log")
 WATCH_DIR = os.path.join(BASE, "wedge-watch")
 # the watchers' captures, newest kept per kind (an httpfail event is one report plus up to two samples)
 CAPTURE_KEEP = {"boot-*.txt": 30, "wedge-sample-*.txt": 5, "hang-sample-*.txt": 5, "stall-sample-*.txt": 5, "httpfail-*.txt": 15,
-                "iinact-stall*.txt": 2}
+                "iinact-stall*.txt": 2, "exit-stuck-*.txt": 10}
 GAME_VER = os.path.join(BASE, "ffxiv", "game", "ffxivgame.ver")
 XIVAPI_PROBE = "https://v2.xivapi.com/api/sheet/Item?limit=1&fields=Name"   # its "version" is the key of the patch it serves
 LISTS_TOOL = os.path.expanduser("~/.claude/skills/gbr-lists/gbr_lists.py")

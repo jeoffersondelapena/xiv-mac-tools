@@ -5,7 +5,7 @@ Watchers and one command that keep a two-client FFXIV setup on XIV on Mac honest
 
 | Piece | Job |
 |---|---|
-| `portwatch.py` (launchd `xivportwatch`, 4 s) | classifies each boot, sweeps orphaned renderers, syncs meter settings between windows, detects an IINACT parser stall from its network log, and calls a live window frozen when XIV Doctor's heartbeat stops for four beats, or its timer thread reports the frame loop stalled that long (about twenty seconds with the five-second beat; thread-samples the game) |
+| `portwatch.py` (launchd `xivportwatch`, 4 s) | classifies each boot, sweeps orphaned renderers, syncs meter settings between windows, detects an IINACT parser stall from its network log, and calls a live window frozen when XIV Doctor's heartbeat stops for four beats, or its timer thread reports the frame loop stalled that long (about twenty seconds with the five-second beat; it records memory pressure and swap use with the report, and thread-samples the game unless the machine is short of memory, where sampling would only hold the game still for longer); it also ends a game that is still running two minutes after XIV Doctor wrote `unloading; game closing`, keeps the last plugin lines as `exit-stuck-*.txt`, and notifies |
 | `xivboot.py` (launchd `xivboot`) | boot monitor: first frame, plugin load, samples of wedged boots |
 | `netwatch.py` (launchd `xivnetwatch`) | captures the in-game HTTP failures with thread samples |
 | `bin/xivport` | `xivport`, `clean`, `sync`, `sample` |

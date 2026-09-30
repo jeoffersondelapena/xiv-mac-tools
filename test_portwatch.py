@@ -296,8 +296,6 @@ class SyncTrigger(unittest.TestCase):
         self.assertFalse(pw.sync_due(False, False))
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=1)
 
 
 class SamplePlan(unittest.TestCase):
@@ -623,9 +621,162 @@ class StaleServer(unittest.TestCase):
         self.assertFalse(pw.REAL_SERVER_RE.search("/Applications/XIV on Mac.app/Contents/Resources/wine/bin/wineserver -w"))
 
 
+class StuckClosing(unittest.TestCase):
+    CLOSING = "[22:44:32.376] unloading; game closing"
+
+    def test_a_game_still_there_two_minutes_after_it_began_to_close_is_stuck(self):
+        self.assertTrue(pw.exit_stuck_verdict(self.CLOSING, 120))
+        self.assertTrue(pw.exit_stuck_verdict(self.CLOSING, 900))
+
+    def test_a_normal_close_gets_its_time(self):
+        self.assertFalse(pw.exit_stuck_verdict(self.CLOSING, 22))
+        self.assertFalse(pw.exit_stuck_verdict(self.CLOSING, 119))
+
+    def test_a_plugin_switched_off_while_the_game_runs_is_never_a_stuck_close(self):
+        self.assertFalse(pw.exit_stuck_verdict("[23:41:56.973] unloading", 5000))
+        self.assertFalse(pw.exit_stuck_verdict("[23:41:56.973] heartbeat: logged in True; territory 131", 5000))
+        self.assertFalse(pw.exit_stuck_verdict("", 5000))
+
+    def diag(self, d, started, last_line, age, pid_suffix=492):
+        import time
+        path = os.path.join(d, "doctor-%s-%d.log" % (datetime.datetime.fromtimestamp(started).strftime("%Y%m%d-%H%M%S"), pid_suffix))
+        with open(path, "w") as f:
+            f.write("[x] heartbeat: logged in True; territory 131\n" + last_line + "\n")
+        os.utime(path, (time.time() - age, time.time() - age))
+        return path
+
+    def watch(self, d):
+        watch = pw.ExitWatch(d)
+        stuck, clean = [], []
+        watch.on_stuck = lambda pid, age, path: stuck.append(pid)
+        watch.on_clean_exit = lambda pid: clean.append(pid)
+        return watch, stuck, clean
+
+    def test_the_watch_ends_a_stuck_close_once_and_does_not_call_it_clean(self):
+        import tempfile, time
+        d = tempfile.mkdtemp()
+        started = time.time() - 9000
+        self.diag(d, started, self.CLOSING, age=130)
+        watch, stuck, clean = self.watch(d)
+        games = [(26630, started, 205.0, "cmd")]
+        watch.tick(time.time(), games)
+        watch.tick(time.time(), games)
+        watch.tick(time.time(), [])
+        self.assertEqual(([26630], []), (stuck, clean))
+        self.assertEqual((set(), set()), (watch.closing, watch.ended))
+
+    def test_a_close_that_finishes_by_itself_is_clean(self):
+        import tempfile, time
+        d = tempfile.mkdtemp()
+        started = time.time() - 9000
+        self.diag(d, started, self.CLOSING, age=6)
+        watch, stuck, clean = self.watch(d)
+        watch.tick(time.time(), [(26630, started, 40.0, "cmd")])
+        self.assertEqual(([], []), (stuck, clean))
+        watch.tick(time.time(), [])
+        watch.tick(time.time(), [])
+        self.assertEqual(([], [26630]), (stuck, clean))
+
+    def test_only_the_closing_window_is_touched(self):
+        import tempfile, time
+        d = tempfile.mkdtemp()
+        first, second = time.time() - 9000, time.time() - 5000
+        self.diag(d, first, self.CLOSING, age=500)
+        self.diag(d, second, "[22:50:00.000] unloading", age=500, pid_suffix=3012)
+        watch, stuck, clean = self.watch(d)
+        watch.tick(time.time(), [(26630, first, 205.0, "cmd"), (41798, second, 30.0, "cmd")])
+        self.assertEqual([26630], stuck)
+
+    def test_the_report_names_where_the_shutdown_stopped(self):
+        dalamud = ("2026-09-30 22:44:20.957 +08:00 [INF] Framework::Destroy!\n"
+                   "2026-09-30 22:44:39.381 +08:00 [INF] [LocalPlugin] Finished unloading Glamourer\n"
+                   "2026-09-30 22:44:39.381 +08:00 [DBG] [Glamourer] Disposed all services.\n"
+                   "2026-09-30 22:44:39.381 +08:00 [INF] [LocalPlugin] Unloading vnavmesh\n")
+        text = pw.exit_report(26630, 121, "memory pressure normal, swap 2.2 of 3.0 GB used", "[x] heartbeat: a\n" + self.CLOSING + "\n", dalamud)
+        self.assertIn("pid 26630 was still running 121 s after the game began to close", text)
+        self.assertTrue(text.rstrip().endswith("[LocalPlugin] Unloading vnavmesh"))
+        self.assertIn("unloading; game closing", text)
+        self.assertNotIn("Disposed all services", text)
+
+    def test_a_stuck_close_is_ended_reported_and_noted(self):
+        import subprocess, tempfile, time
+        base = tempfile.mkdtemp()
+        os.makedirs(os.path.join(base, "wedge-watch"))
+        d = os.path.join(base, "diag")
+        os.makedirs(d)
+        pid = int(subprocess.run(["sh", "-c", "sleep 60 >/dev/null 2>&1 & echo $!"], capture_output=True, text=True).stdout)
+        started = time.time() - 9000
+        self.diag(d, started, self.CLOSING, age=125)
+        dalamud = os.path.join(base, "dalamud.log")
+        with open(dalamud, "w") as f:
+            f.write("2026-09-30 22:44:39.381 +08:00 [INF] [LocalPlugin] Unloading vnavmesh\n")
+        notes, notices, lines = [], [], []
+        saved = (pw.BASE, pw.DALAMUD_LOG, pw.set_attention, pw.notify, pw.boot_note)
+        pw.BASE, pw.DALAMUD_LOG = base, dalamud
+        pw.set_attention = lambda source, note: notes.append((source, note))
+        pw.notify = lambda title, text: notices.append(title)
+        pw.boot_note = lines.append
+        try:
+            pw.ExitWatch(d).tick(time.time(), [(pid, started, 205.0, "cmd")])
+        finally:
+            pw.BASE, pw.DALAMUD_LOG, pw.set_attention, pw.notify, pw.boot_note = saved
+        self.assertFalse(pw.process_alive(pid))
+        reports = [n for n in os.listdir(os.path.join(base, "wedge-watch")) if n.startswith("exit-stuck-")]
+        self.assertEqual(1, len(reports))
+        with open(os.path.join(base, "wedge-watch", reports[0])) as f:
+            self.assertIn("Unloading vnavmesh", f.read())
+        self.assertEqual(["Game stuck closing"], notices)
+        self.assertEqual("GameExit", notes[0][0])
+        self.assertRegex(notes[0][1], r"^a game window was stuck closing for 12\d s and was ended at \d\d:\d\d; capture exit-stuck-\d{6}-%d\.txt$" % pid)
+        self.assertIn("STUCK CLOSING", lines[0])
+        self.assertIn("ended", lines[0])
+
+    def test_a_process_is_ended_and_then_no_longer_alive(self):
+        import subprocess
+        pid = int(subprocess.run(["sh", "-c", "sleep 30 >/dev/null 2>&1 & echo $!"], capture_output=True, text=True).stdout)
+        self.assertTrue(pw.process_alive(pid))
+        self.assertTrue(pw.end_process(pid, wait=2))
+        self.assertFalse(pw.process_alive(pid))
+
+    def test_a_process_that_ignores_the_polite_signal_is_killed(self):
+        import subprocess
+        pid = int(subprocess.run(["sh", "-c", "(trap '' TERM; sleep 30) >/dev/null 2>&1 & echo $!"], capture_output=True, text=True).stdout)
+        self.assertTrue(pw.end_process(pid, wait=1))
+        self.assertFalse(pw.process_alive(pid))
+
+    def test_an_exited_child_nobody_collected_does_not_count_as_alive(self):
+        import subprocess, time
+        child = subprocess.Popen(["true"])
+        time.sleep(0.3)
+        self.assertFalse(pw.process_alive(child.pid))
+        child.wait()
+
+
+class MemoryFacts(unittest.TestCase):
+    SWAP = "total = 3072.00M  used = 2263.31M  free = 808.69M  (encrypted)"
+
+    def test_pressure_and_swap_read_as_one_line(self):
+        self.assertEqual((1, "memory pressure normal, swap 2.2 of 3.0 GB used"), pw.describe_memory("1\n", self.SWAP))
+        self.assertEqual((4, "memory pressure critical, swap 2.2 of 3.0 GB used"), pw.describe_memory("4", self.SWAP))
+
+    def test_missing_values_do_not_break_the_report(self):
+        self.assertEqual((None, "memory pressure unknown"), pw.describe_memory("", ""))
+        self.assertEqual((2, "memory pressure warning"), pw.describe_memory("2", None))
+
+    def test_no_thread_sample_is_taken_while_the_machine_is_short_of_memory(self):
+        self.assertTrue(pw.sample_worthwhile(1))
+        self.assertTrue(pw.sample_worthwhile(None))
+        self.assertFalse(pw.sample_worthwhile(2))
+        self.assertFalse(pw.sample_worthwhile(4))
+
+
 class TeardownTiming(unittest.TestCase):
     def test_reports_how_long_the_server_outlived_the_last_window(self):
         self.assertEqual("wineserver exited 7s after the last window", pw.teardown_note(1000.0, 1007.4))
 
     def test_nothing_to_report_without_a_recorded_exit(self):
         self.assertIsNone(pw.teardown_note(None, 1007.4))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=1)
