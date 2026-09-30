@@ -586,6 +586,43 @@ class HangDetection(unittest.TestCase):
         self.assertEqual([26844], hangs)
 
 
+class StaleServer(unittest.TestCase):
+    def test_a_running_game_is_never_touched(self):
+        self.assertFalse(pw.stale_server_verdict(1, 500, True, [900], 400))
+
+    def test_a_normal_exit_gets_time_to_take_its_own_server_down(self):
+        self.assertFalse(pw.stale_server_verdict(0, 8, False, [900], 400))
+        self.assertTrue(pw.stale_server_verdict(0, 13, False, [900], 400))
+
+    def test_a_force_quit_is_swept_sooner(self):
+        self.assertFalse(pw.stale_server_verdict(0, 3, True, [900], 400))
+        self.assertTrue(pw.stale_server_verdict(0, 5, True, [900], 400))
+
+    def test_a_launch_in_progress_is_left_alone(self):
+        self.assertFalse(pw.stale_server_verdict(0, 60, True, [900], 5))
+        self.assertFalse(pw.stale_server_verdict(0, 60, True, [20], 20))
+
+    def test_nothing_to_sweep_without_a_server(self):
+        self.assertFalse(pw.stale_server_verdict(0, 60, True, [], None))
+
+    def test_a_log_cut_off_mid_session_means_the_game_was_killed(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "doctor-20260930-140841-492.log")
+        with open(path, "w") as f:
+            f.write("[14:46:12.0] heartbeat: logged in True; territory 974\n")
+        self.assertTrue(pw.last_exit_was_kill(d))
+        with open(path, "a") as f:
+            f.write("[14:47:00.0] unloading\n")
+        self.assertFalse(pw.last_exit_was_kill(d))
+        self.assertFalse(pw.last_exit_was_kill(tempfile.mkdtemp()))
+
+    def test_only_the_real_server_counts_not_the_launchers_waiter(self):
+        real = "/Applications/XIV on Mac.app/Contents/Resources/wine/lib/wine/../../bin/wineserver"
+        self.assertTrue(pw.REAL_SERVER_RE.search(real))
+        self.assertFalse(pw.REAL_SERVER_RE.search("/Applications/XIV on Mac.app/Contents/Resources/wine/bin/wineserver -w"))
+
+
 class TeardownTiming(unittest.TestCase):
     def test_reports_how_long_the_server_outlived_the_last_window(self):
         self.assertEqual("wineserver exited 7s after the last window", pw.teardown_note(1000.0, 1007.4))

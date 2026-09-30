@@ -1004,6 +1004,90 @@ def sweep_plan(n_games, n_servers, n_procs):
     return None
 
 
+REAL_SERVER_RE = re.compile(r"XIV on Mac\.app/.*/bin/wineserver\s*$")   # not the launcher's `wineserver -w` waiters
+EXIT_WAIT = 12            # a normal exit takes its server down within 4-9 s
+KILL_WAIT = 4             # a force-quit never does; the plugin's log not ending in 'unloading' tells the two apart
+SERVER_MIN_AGE = 60
+LAUNCH_QUIET = 30         # anything Wine-side younger than this is a launch in progress
+
+
+def stale_server_verdict(n_games, gone_for, killed, server_ages, youngest_wine_age):
+    """With no game at all, a server that outlives its session is left over from a force-quit, and the next launch
+    would join it. Never while a game runs (2026-09-05: the server a live window was attached to was removed and the
+    window died) and never during a launch."""
+    if n_games or gone_for is None or not server_ages:
+        return False
+    if gone_for < (KILL_WAIT if killed else EXIT_WAIT):
+        return False
+    if max(server_ages) < SERVER_MIN_AGE:
+        return False
+    return youngest_wine_age is None or youngest_wine_age >= LAUNCH_QUIET
+
+
+def last_exit_was_kill(directory):
+    """The plugin writes 'unloading' when the game shuts down by itself; a log that ends on anything else was cut off."""
+    try:
+        names = [n for n in os.listdir(directory) if n.startswith("doctor-")]
+        if not names:
+            return False
+        newest = max(names, key=lambda n: os.path.getmtime(os.path.join(directory, n)))
+        with open(os.path.join(directory, newest), "rb") as f:
+            lines = f.read()[-2048:].decode("utf-8", "replace").splitlines()
+    except OSError:
+        return False
+    return bool(lines) and "unloading" not in lines[-1]
+
+
+def wine_ages(now):
+    """(real server ages, age of the youngest Wine-side process) from one listing."""
+    out = subprocess.run(["ps", "-Ao", "pid=,lstart=,command="], capture_output=True, text=True).stdout
+    servers, youngest = [], None
+    for line in out.splitlines():
+        m = re.match(r"\s*(\d+)\s+(\w{3} \w{3}\s+\d+ \d{2}:\d{2}:\d{2} \d{4})\s+(.*)$", line)
+        if not m:
+            continue
+        cmd = m.group(3)
+        real = bool(REAL_SERVER_RE.search(cmd))
+        if not real and not WINE_CMD_RE.match(cmd) and not is_wineserver_line(cmd):
+            continue
+        try:
+            age = now - datetime.datetime.strptime(m.group(2), "%a %b %d %H:%M:%S %Y").timestamp()
+        except ValueError:
+            continue
+        if real:
+            servers.append((int(m.group(1)), age))
+        youngest = age if youngest is None else min(youngest, age)
+    return servers, youngest
+
+
+class ServerSweep:
+    def __init__(self, directory=None):
+        self.directory = directory or DOCTOR_DIAG_DIR
+        self.gone_at = None
+
+    def tick(self, now, games):
+        if games:
+            self.gone_at = None
+            return
+        if self.gone_at is None:
+            self.gone_at = now
+        servers, youngest = wine_ages(now)
+        if stale_server_verdict(0, now - self.gone_at, last_exit_was_kill(self.directory), [a for _, a in servers], youngest):
+            self.sweep(servers, now - self.gone_at)
+
+    def sweep(self, servers, gone_for):
+        for pid, _ in servers:
+            subprocess.run(["kill", "-TERM", str(pid)], capture_output=True)
+        time.sleep(3)
+        for pid, _ in wine_ages(time.time())[0]:
+            subprocess.run(["kill", "-9", str(pid)], capture_output=True)
+        dead = wine_procs()
+        for pid, _ in dead:
+            subprocess.run(["kill", "-9", str(pid)], capture_output=True)
+        log(f"cleared the Wine server a session left behind ({gone_for:.0f}s after it ended; {len(servers)} server(s), "
+            f"{len(dead)} leftover process(es)); the next launch starts fresh")
+
+
 def wineserver_alive():
     out = subprocess.run(["ps", "-Ao", "command="], capture_output=True, text=True).stdout
     return any(is_wineserver_line(line) for line in out.splitlines())
@@ -1080,6 +1164,7 @@ def watch():
     two_servers_noted = False
     stall_watch = StallWatch()
     hang_watch = HangWatch()
+    server_sweep = ServerSweep()
     last_exit_at = None
     while True:
         live = game_pids()
@@ -1087,6 +1172,7 @@ def watch():
         stall_watch.tick(time.time(), running_now)
         hang_watch.tick(time.time(), running_now)
         sweep_orphan_renderers(kill=True, say=log)
+        server_sweep.tick(time.time(), running_now)
         held = bound_ports(live)
         state = tuple(sorted(held.items()))
         if state != last:
