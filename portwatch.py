@@ -603,12 +603,17 @@ def exit_stuck_verdict(last_line, file_age, threshold=EXIT_STUCK_AFTER):
     return "game closing" in last_line and file_age >= threshold
 
 
-def exit_report(pid, age, memory, diag_tail, dalamud_tail):
-    """What a stuck close leaves to look at: the last plugin lines say where the shutdown stopped."""
-    unload = [l for l in dalamud_tail.splitlines() if "[LocalPlugin]" in l or "Framework::Destroy" in l][-6:]
-    return "\n".join([f"pid {pid} was still running {age:.0f} s after the game began to close, and was ended.", memory, "",
+def exit_report(pid, age, memory, diag_tail, dalamud_tail, sample=None):
+    """What a stuck close leaves to look at: the last plugin lines say where the shutdown stopped. When Dalamud's own
+    shutdown finished ("Session has ended."), the hang was in the game's exit after it, and only a thread sample shows where."""
+    lines = dalamud_tail.splitlines()
+    unload = [l for l in lines if "[LocalPlugin]" in l or "Framework::Destroy" in l][-6:]
+    ended = [l for l in lines if "Session has ended." in l][-1:]
+    where = ([f"Dalamud finished shutting down ({ended[0][:23]}); the game process did not exit after that."] if ended else []) \
+        + ([f"thread sample of the stuck process: {os.path.basename(sample)}"] if sample else [])
+    return "\n".join([f"pid {pid} was still running {age:.0f} s after the game began to close, and was ended.", memory, *where, "",
                       "last lines of the window's XIV Doctor log:", *diag_tail.splitlines()[-6:], "",
-                      "last plugin load and unload lines of dalamud.log (shared by all windows):", *unload]) + "\n"
+                      "last plugin load and unload lines of dalamud.log (shared by all windows):", *unload, *ended]) + "\n"
 
 
 def process_alive(pid):
@@ -682,11 +687,19 @@ class ExitWatch:
         set_attention("GameExit", None)
 
     def on_stuck(self, pid, age, diag_path):
-        _, memory = memory_facts()
-        out = os.path.join(BASE, "wedge-watch", f"exit-stuck-{datetime.datetime.now():%H%M%S}-{pid}.txt")
+        level, memory = memory_facts()
+        stamp = f"{datetime.datetime.now():%H%M%S}-{pid}"
+        out = os.path.join(BASE, "wedge-watch", f"exit-stuck-{stamp}.txt")
+        sample = None
+        # nobody plays a window that is closing, so holding it still for a sample costs nothing, unless memory is short
+        if sample_worthwhile(level):
+            sample = os.path.join(BASE, "wedge-watch", f"exit-sample-{stamp}.txt")
+            subprocess.run(["sample", str(pid), "3", "-file", sample], capture_output=True)
+            if not os.path.exists(sample):
+                sample = None
         try:
             with open(out, "w") as f:
-                f.write(exit_report(pid, age, memory, tail_of(diag_path, 2048), tail_of(DALAMUD_LOG, 65536)))
+                f.write(exit_report(pid, age, memory, tail_of(diag_path, 2048), tail_of(DALAMUD_LOG, 65536), sample))
         except OSError:
             out = None
         gone = end_process(pid)

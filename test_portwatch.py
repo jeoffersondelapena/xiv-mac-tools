@@ -777,6 +777,18 @@ class StuckClosing(unittest.TestCase):
         self.assertIn("unloading; game closing", text)
         self.assertNotIn("Disposed all services", text)
 
+    def test_the_report_says_when_dalamud_had_finished_and_names_the_sample(self):
+        dalamud = ("2026-10-01 12:58:36.392 +08:00 [INF] [LocalPlugin] Finished unloading WrathCombo\n"
+                   "2026-10-01 12:58:38.564 +08:00 [DBG] [ServiceManager] Service<Dalamud>: Unset\n"
+                   "2026-10-01 12:58:38.567 +08:00 [INF] Session has ended.\n")
+        text = pw.exit_report(10993, 120, "memory pressure normal", self.CLOSING + "\n", dalamud, "/x/exit-sample-130032-10993.txt")
+        self.assertIn("Dalamud finished shutting down (2026-10-01 12:58:38.567); the game process did not exit after that.", text)
+        self.assertIn("thread sample of the stuck process: exit-sample-130032-10993.txt", text)
+        self.assertTrue(text.rstrip().endswith("Session has ended."))
+        older = pw.exit_report(26630, 121, "memory pressure normal", self.CLOSING + "\n", "2026-09-30 22:44:39.381 +08:00 [INF] [LocalPlugin] Unloading vnavmesh\n")
+        self.assertNotIn("Dalamud finished", older)
+        self.assertNotIn("thread sample", older)
+
     def test_a_stuck_close_is_ended_reported_and_noted(self):
         import subprocess, tempfile, time
         base = tempfile.mkdtemp()
@@ -790,20 +802,22 @@ class StuckClosing(unittest.TestCase):
         with open(dalamud, "w") as f:
             f.write("2026-09-30 22:44:39.381 +08:00 [INF] [LocalPlugin] Unloading vnavmesh\n")
         notes, notices, lines = [], [], []
-        saved = (pw.BASE, pw.DALAMUD_LOG, pw.set_attention, pw.notify, pw.boot_note)
+        saved = (pw.BASE, pw.DALAMUD_LOG, pw.set_attention, pw.notify, pw.boot_note, pw.memory_facts)
         pw.BASE, pw.DALAMUD_LOG = base, dalamud
         pw.set_attention = lambda source, note: notes.append((source, note))
         pw.notify = lambda title, text: notices.append(title)
         pw.boot_note = lines.append
+        pw.memory_facts = lambda: (2, "memory pressure warning")
         try:
             pw.ExitWatch(d).tick(time.time(), [(pid, started, 205.0, "cmd")])
         finally:
-            pw.BASE, pw.DALAMUD_LOG, pw.set_attention, pw.notify, pw.boot_note = saved
+            pw.BASE, pw.DALAMUD_LOG, pw.set_attention, pw.notify, pw.boot_note, pw.memory_facts = saved
         self.assertFalse(pw.process_alive(pid))
         reports = [n for n in os.listdir(os.path.join(base, "wedge-watch")) if n.startswith("exit-stuck-")]
         self.assertEqual(1, len(reports))
         with open(os.path.join(base, "wedge-watch", reports[0])) as f:
             self.assertIn("Unloading vnavmesh", f.read())
+        self.assertEqual([], [n for n in os.listdir(os.path.join(base, "wedge-watch")) if n.startswith("exit-sample-")])
         self.assertEqual(["Game stuck closing"], notices)
         self.assertEqual("GameExit", notes[0][0])
         self.assertRegex(notes[0][1], r"^a game window was stuck closing for 12\d s and was ended at \d\d:\d\d; capture exit-stuck-\d{6}-%d\.txt$" % pid)
