@@ -58,8 +58,7 @@ def crash_after(t0):
         if m and datetime.datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S") >= t0: return p
     return None
 
-LAST_SEG = None
-def report(seg, live=False):
+def report(seg, live=False, running=False):
     r = analyse(seg); t0 = r["start"]; f = lambda t: t.strftime("%H:%M:%S") if t else "never"
     d = lambda t: f"+{int((t - t0).total_seconds())}s" if t else "never"
     lines = [f"BOOT {f(t0)}", f"  first frame: {d(r['first_frame'])} | all plugins loaded: {d(r['plugins_done'])}"]
@@ -83,29 +82,51 @@ def report(seg, live=False):
     if r["hitches"]: lines.append(f"  hitches: {r['hitches']}")
     if "Browsingway" not in r["loads"]: lines.append("  Browsingway (dev plugin) did NOT load this boot; if a game patch just landed, rebase and rebuild the fork")
     if not live:
-        if seg is LAST_SEG and game_pid(): lines.append("  verdict: still running"); return "\n".join(lines)
+        if running: lines.append("  verdict: still running"); return "\n".join(lines)
         verdict = "crashed" if crash else ("never drew a frame (black screen)" if not r["first_frame"] else
                   ("plugin loading stalled" if not r["plugins_done"] else ("ok, quit normally" if r["ended"] else "ok, but ended without a normal quit (killed?)")))
         lines.append(f"  verdict: {verdict}")
     return "\n".join(lines)
 
 
-def _game_pids():
+def parse_games(ps_out):
+    """{pid: launch time} of the game processes in `ps -Ao pid=,lstart=,command=` output."""
     # The path holds spaces, so argv[0] cannot be split off; instead take the first ".exe"
     # in the command, which is the crash handler's own name when it is the crash handler.
-    out = subprocess.run(["ps", "-Ao", "pid=,command="], capture_output=True, text=True).stdout
-    pids = []
-    for line in out.splitlines():
-        pid, _, cmd = line.strip().partition(" ")
-        end = cmd.find(".exe")
-        if end != -1 and cmd[:end + 4].endswith("ffxiv_dx11.exe"):
-            pids.append(int(pid))
-    return pids
+    games = {}
+    for line in ps_out.splitlines():
+        parts = line.split(None, 6)
+        if len(parts) < 7:
+            continue
+        end = parts[6].find(".exe")
+        if end == -1 or not parts[6][:end + 4].endswith("ffxiv_dx11.exe"):
+            continue
+        try: games[int(parts[0])] = datetime.datetime.strptime(" ".join(parts[2:6]), "%b %d %H:%M:%S %Y")
+        except ValueError: continue
+    return games
 
 
-def game_pid():
-    pids = _game_pids()
-    return str(pids[0]) if pids else None
+def game_starts():
+    return parse_games(subprocess.run(["ps", "-Ao", "pid=,lstart=,command="], capture_output=True, text=True).stdout)
+
+
+BOOT_LEAD = 120   # Dalamud's first line follows the launch by 2-4 s; the rest is room for a slow start
+
+def boot_pid(boot_start, games):
+    """The game process a boot in the log belongs to: the newest one launched shortly before its first line.
+    On 2026-10-01 a wedged launch was closed and the relaunch, two seconds old, was sampled in its place."""
+    fits = [(st, pid) for pid, st in games.items() if -5 <= (boot_start - st).total_seconds() <= BOOT_LEAD]
+    return str(max(fits)[1]) if fits else None
+
+
+def boot_gone(boot_start, games):
+    """No running game can be this boot's: each was launched after its first line, or none runs."""
+    return all(st > boot_start for st in games.values())
+
+
+def short_of_memory():
+    level = subprocess.run(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"], capture_output=True, text=True).stdout.strip()
+    return level in ("2", "4")
 
 
 def watch():
@@ -114,18 +135,21 @@ def watch():
         lines = read_log(); bl = boots(lines)
         if bl:
             i, j = bl[-1]; seg = lines[i:j]; r = analyse(seg); key = seg[0][:23]
-            age = (datetime.datetime.now() - r["start"]).total_seconds(); pid = game_pid()
+            age = (datetime.datetime.now() - r["start"]).total_seconds(); games = game_starts(); pid = boot_pid(r["start"], games)
             stalled = pid and ((not r["first_frame"] and age > FIRST_FRAME_LIMIT) or (r["first_frame"] and not r["plugins_done"] and age > PLUGIN_LIMIT))
             if stalled and key not in sampled:
-                sampled.add(key); out = os.path.join(HERE, f"wedge-sample-{r['start'].strftime('%H%M%S')}.txt")
-                subprocess.run(["sample", pid, "8", "-file", out], capture_output=True)
+                sampled.add(key); out = None
+                if not short_of_memory():   # sampling a game that is only being paged holds it still for minutes
+                    out = os.path.join(HERE, f"wedge-sample-{r['start'].strftime('%H%M%S')}.txt")
+                    subprocess.run(["sample", pid, "8", "-file", out], capture_output=True)
                 set_attention("Boot", event_note("a boot wedged on a black screen", out)); noted = True
-                open(os.path.join(HERE, f"boot-{r['start'].strftime('%H%M%S')}.txt"), "a").write(report(seg, live=True) + f"\n  STALL detected at +{int(age)}s; thread sample: {out}\n")
+                open(os.path.join(HERE, f"boot-{r['start'].strftime('%H%M%S')}.txt"), "a").write(report(seg, live=True) + f"\n  STALL detected at +{int(age)}s; thread sample: {out or 'none, short of memory'}\n")
             if noted and key not in sampled and r["first_frame"] and r["plugins_done"]:
                 set_attention("Boot", None); noted = False
-            done = (r["plugins_done"] or r["ended"] or crash_after(r["start"])) and not pid
+            # a boot whose own process is gone gets its report even when it never finished loading
+            done = ((r["plugins_done"] or r["ended"] or crash_after(r["start"])) and not pid) or (age > 30 and boot_gone(r["start"], games))
             if (done or (r["plugins_done"] and age > 300)) and key not in seen:
-                seen.add(key); open(os.path.join(HERE, f"boot-{r['start'].strftime('%H%M%S')}.txt"), "a").write(report(seg) + "\n")
+                seen.add(key); open(os.path.join(HERE, f"boot-{r['start'].strftime('%H%M%S')}.txt"), "a").write(report(seg, running=bool(pid)) + "\n")
         time.sleep(10)
 
 if __name__ == "__main__":
@@ -134,7 +158,7 @@ if __name__ == "__main__":
         n = int(sys.argv[sys.argv.index("--last") + 1]) if "--last" in sys.argv else 3
         lines = read_log()
         bl = boots(lines)
+        games = game_starts()
         for i, j in bl[-n:]:
             seg = lines[i:j]
-            if (i, j) == bl[-1]: LAST_SEG = seg
-            print(report(seg), "\n")
+            print(report(seg, running=(i, j) == bl[-1] and boot_pid(analyse(seg)["start"], games) is not None), "\n")

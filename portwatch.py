@@ -487,14 +487,16 @@ def stalled_seconds(last_line):
 
 def hang_verdict(file_age, has_heartbeat, last_line, threshold=HANG_AFTER):
     """A window that has produced heartbeats, then nothing for the threshold, has frozen; so has one whose timer
-    thread says the frame loop has been stalled that long, even though that keeps the file fresh.
+    thread says the frame loop has been stalled that long, even though that keeps the file fresh. Those reports
+    come every three seconds (4.1 s at most over seven launches), so silence after one is the whole process held,
+    heartbeat or not: on 2026-10-01 a launch froze 6 s into plugin loading and went unreported for two minutes.
     A file ending in 'unloading' is the plugin switched off on purpose, not a hang."""
-    if not has_heartbeat or "unloading" in last_line:
+    if "unloading" in last_line:
         return False
     stalled = stalled_seconds(last_line)
     if stalled is not None:
-        return stalled >= STALL_AFTER
-    return file_age > threshold
+        return stalled >= STALL_AFTER or file_age >= HANG_FLOOR
+    return has_heartbeat and file_age > threshold
 
 
 class HangWatch:
@@ -538,7 +540,7 @@ class HangWatch:
                 continue
             if frozen:
                 self.reported.add(pid)
-                self.on_hang(pid, max(age, stalled_seconds(last) or 0), name)
+                self.on_hang(pid, age + (stalled_seconds(last) or 0), name)
 
     def on_recover(self, pid, name):
         boot_note(f"pid {pid}: frame loop resumed; that freeze ended on its own ({name})")

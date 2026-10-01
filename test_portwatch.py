@@ -557,6 +557,30 @@ class HangDetection(unittest.TestCase):
         self.assertTrue(pw.hang_verdict(file_age=1, has_heartbeat=True, last_line="[14:00:26.0] frame loop stalled 26s; gc 1/1/1", threshold=20))
         self.assertFalse(pw.hang_verdict(file_age=1, has_heartbeat=True, last_line="[14:00:40.0] frame loop resumed", threshold=20))
 
+    def test_stall_reports_that_stop_mean_the_whole_process_is_held(self):
+        last = "[10:53:38.601] frame loop stalled 6s; gc 411/117/14, pool busy 6, queued 0"
+        self.assertFalse(pw.hang_verdict(file_age=4, has_heartbeat=False, last_line=last, threshold=150))
+        self.assertFalse(pw.hang_verdict(file_age=19, has_heartbeat=False, last_line=last, threshold=150))
+        self.assertTrue(pw.hang_verdict(file_age=20, has_heartbeat=False, last_line=last, threshold=150))
+        self.assertFalse(pw.hang_verdict(file_age=500, has_heartbeat=False, last_line="[10:53:32.635] XIV Doctor 0.1.0.0 loaded, pid 492", threshold=150))
+
+    def test_a_launch_frozen_during_plugin_loading_is_reported_with_the_whole_stall(self):
+        import tempfile, time
+        d = tempfile.mkdtemp()
+        started = time.time() - 60
+        path = os.path.join(d, "doctor-%s-492.log" % datetime.datetime.fromtimestamp(started).strftime("%Y%m%d-%H%M%S"))
+        with open(path, "w") as f:
+            f.write("[10:53:32.635] XIV Doctor 0.1.0.0 loaded, pid 492\n[10:53:34.825] frame loop stalled 2s; gc 267/58/13, pool busy 28, queued 0\n"
+                    "[10:53:38.601] frame loop stalled 6s; gc 411/117/14, pool busy 6, queued 0\n")
+        now = time.time()
+        os.utime(path, (now - 30, now - 30))
+        watch = pw.HangWatch(d)
+        hangs = []
+        watch.on_hang = lambda pid, age, name: hangs.append((pid, round(age)))
+        watch.tick(now, [(9930, started, 99.0, "cmd")])
+        watch.tick(now + 4, [(9930, started, 99.0, "cmd")])
+        self.assertEqual([(9930, 36)], hangs)
+
     def test_a_stall_that_ends_on_its_own_takes_the_report_back(self):
         import tempfile, time
         d = tempfile.mkdtemp()
