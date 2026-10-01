@@ -624,6 +624,45 @@ class HangDetection(unittest.TestCase):
         self.assertEqual([26844], hangs)
 
 
+class WaitingBuild(unittest.TestCase):
+    def test_only_plugins_with_a_build_waiting_are_named(self):
+        text = '{"IINACT": {"installed_sha": "a"}, "Browsingway": {"pending_install": {"sha": "b"}}, "seeded": true}'
+        self.assertEqual(["Browsingway"], pw.pending_builds(text))
+        self.assertEqual([], pw.pending_builds("not json"))
+        self.assertEqual([], pw.pending_builds("[1, 2]"))
+
+    def test_the_sync_runs_once_the_game_has_been_gone_a_few_seconds(self):
+        self.assertFalse(pw.nudge_due(1, 60, ["Browsingway"], None))
+        self.assertFalse(pw.nudge_due(0, 3, ["Browsingway"], None))
+        self.assertFalse(pw.nudge_due(0, 60, [], None))
+        self.assertTrue(pw.nudge_due(0, 8, ["Browsingway"], None))
+
+    def test_a_build_that_still_waits_is_not_retried_every_tick(self):
+        self.assertFalse(pw.nudge_due(0, 60, ["Browsingway"], 30))
+        self.assertTrue(pw.nudge_due(0, 700, ["Browsingway"], 600))
+
+    def test_the_watch_nudges_once_and_never_while_a_game_runs(self):
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(), "state.json")
+        with open(path, "w") as f:
+            f.write('{"Browsingway": {"pending_install": {"sha": "b"}}}')
+        nudge = pw.InstallNudge(path)
+        ran = []
+        nudge.run = lambda pending: ran.append(pending)
+        game = [(26630, 0.0, 50.0, "cmd")]
+        nudge.tick(1000.0, game)
+        nudge.tick(1004.0, [])
+        nudge.tick(1008.0, [])
+        self.assertEqual([], ran)
+        nudge.tick(1012.0, [])
+        nudge.tick(1016.0, [])
+        self.assertEqual([["Browsingway"]], ran)
+        nudge.tick(1020.0, game)
+        nudge.tick(1024.0, [])
+        nudge.tick(1040.0, [])
+        self.assertEqual([["Browsingway"]], ran)
+
+
 class StaleServer(unittest.TestCase):
     def test_a_running_game_is_never_touched(self):
         self.assertFalse(pw.stale_server_verdict(1, 500, True, [900], 400))

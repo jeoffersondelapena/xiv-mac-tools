@@ -1250,6 +1250,57 @@ class ServerSweep:
             f"{len(dead)} leftover process(es)); the next launch starts fresh")
 
 
+# The hourly sync installs a verified build only at its own tick, so closing the game and starting it again
+# inside the hour kept running the old build. With no game left, a waiting build is installed at once.
+SYNC_STATE = os.path.join(BASE, "wedge-watch", "upstream-sync-state.json")
+SYNC_AGENT = "com.jeoffersondelapena.xivupstream"
+NUDGE_AFTER = 8
+NUDGE_EVERY = 600
+
+
+def pending_builds(state_text):
+    """Plugins with a build waiting for the game to close, from the sync's state file."""
+    try:
+        state = json.loads(state_text)
+    except ValueError:
+        return []
+    if not isinstance(state, dict):
+        return []
+    return sorted(name for name, st in state.items() if isinstance(st, dict) and st.get("pending_install"))
+
+
+def nudge_due(n_games, gone_for, pending, since_last):
+    if n_games or gone_for is None or gone_for < NUDGE_AFTER or not pending:
+        return False
+    return since_last is None or since_last >= NUDGE_EVERY
+
+
+class InstallNudge:
+    def __init__(self, state_path=SYNC_STATE):
+        self.state_path = state_path
+        self.gone_at = None
+        self.nudged_at = None
+
+    def tick(self, now, games):
+        if games:
+            self.gone_at = None
+            return
+        if self.gone_at is None:
+            self.gone_at = now
+        try:
+            with open(self.state_path) as f:
+                pending = pending_builds(f.read())
+        except OSError:
+            return
+        if nudge_due(0, now - self.gone_at, pending, None if self.nudged_at is None else now - self.nudged_at):
+            self.nudged_at = now
+            self.run(pending)
+
+    def run(self, pending):
+        log(f"the game is closed and a build is waiting ({', '.join(pending)}); running the sync now")
+        subprocess.run(["launchctl", "kickstart", f"gui/{os.getuid()}/{SYNC_AGENT}"], capture_output=True)
+
+
 # per-window memory breakdown, once a minute while a game runs; the 2026-09-30 freezes left no such data
 MEMORY_LOG = os.path.join(BASE, "wedge-watch", "memory.log")
 MEMORY_EVERY = 60
@@ -1561,6 +1612,7 @@ def watch():
     exit_watch = ExitWatch()
     memory_log = MemoryLog()
     server_sweep = ServerSweep()
+    install_nudge = InstallNudge()
     last_exit_at = None
     while True:
         live = game_pids()
@@ -1571,6 +1623,7 @@ def watch():
         memory_log.tick(time.time(), running_now)
         sweep_orphan_renderers(kill=True, say=log)
         server_sweep.tick(time.time(), running_now)
+        install_nudge.tick(time.time(), running_now)
         held = bound_ports(live)
         state = tuple(sorted(held.items()))
         if state != last:
