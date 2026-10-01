@@ -262,5 +262,39 @@ class StandingNotes(unittest.TestCase):
         self.assertEqual([], us.reassert_notes(state))
 
 
+class Installing(unittest.TestCase):
+    def build(self):
+        dest, out = tempfile.mkdtemp(), tempfile.mkdtemp()
+        os.makedirs(os.path.join(dest, "renderer"))
+        os.makedirs(os.path.join(out, "renderer"))
+        for folder, files in ((dest, {"Plugin.dll": "new", "renderer/Renderer.exe": "new exe", "SHA256SUMS": "x", "COMMIT": "abc", "UPSTREAM": "def"}),
+                              (out, {"Plugin.dll": "old", "renderer/Renderer.exe": "old exe", "fetched.dll": "kept"})):
+            for rel, text in files.items():
+                with open(os.path.join(folder, rel), "w") as f:
+                    f.write(text)
+        return dest, out
+
+    def read(self, *parts):
+        with open(os.path.join(*parts)) as f:
+            return f.read()
+
+    def test_a_build_replaces_its_files_and_keeps_the_others(self):
+        dest, out = self.build()
+        us.install({"install_dir": out}, dest)
+        self.assertEqual(("new", "new exe", "kept"), (self.read(out, "Plugin.dll"), self.read(out, "renderer", "Renderer.exe"), self.read(out, "fetched.dll")))
+        left = sorted(os.path.relpath(os.path.join(root, n), out) for root, _, names in os.walk(out) for n in names)
+        self.assertEqual(["Plugin.dll", "fetched.dll", "renderer/Renderer.exe"], left)
+
+    def test_a_process_holding_the_old_file_keeps_the_old_file(self):
+        dest, out = self.build()
+        target = os.path.join(out, "renderer", "Renderer.exe")
+        before = os.stat(target).st_ino
+        with open(target) as held:
+            us.install({"install_dir": out}, dest)
+            self.assertEqual("old exe", held.read())
+        self.assertEqual("new exe", self.read(target))
+        self.assertNotEqual(before, os.stat(target).st_ino)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

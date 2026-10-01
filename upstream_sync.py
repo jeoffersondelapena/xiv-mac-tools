@@ -14,6 +14,10 @@ Two more chores ride on the tick: after a game patch, once the game-data source 
 GatherBuddy Reborn lists are regenerated and the settings policy re-applied (game closed); and once a
 week Codex's wiki data is rebuilt and handed to the plugin. When GatherBuddy Reborn or Wrath Combo changes
 version, its settings policy is checked again and re-applied with the game closed.
+
+By hand, for a change made in a fork itself (pushed first): `--build NAME` runs the fork's workflow and
+queues the verified build exactly as a sync would; `--install-now NAME` places a queued build while the game
+runs, for the player to switch the plugin off and on.
 """
 import datetime, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -221,7 +225,9 @@ def artifact_api_level(dest, manifest):
 
 
 def install(plugin, dest):
-    """Copy the build over the dev folder; extra files there (the parser DLLs IINACT fetched) are kept."""
+    """Copy the build over the dev folder; extra files there (the parser DLLs IINACT fetched) are kept.
+    Each file is swapped in whole under its name: a process that has the old one mapped (Browsingway's
+    renderer runs from this folder) keeps it, where writing in place would change it underneath."""
     os.makedirs(plugin["install_dir"], exist_ok=True)
     for root, _, files in os.walk(dest):
         for name in files:
@@ -231,7 +237,9 @@ def install(plugin, dest):
             rel = os.path.relpath(src, dest)
             target = os.path.join(plugin["install_dir"], rel)
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.copy2(src, target)
+            staged = target + ".installing"
+            shutil.copy2(src, staged)
+            os.replace(staged, target)
 
 
 def sync_clone(plugin, sha):
@@ -482,6 +490,12 @@ def sync_one(plugin, state):
         return
     st.pop("failed_api_level", None)
     log(f"{name}: upstream {plugin['upstream']} moved to {head[:7]}; running the fork's workflow")
+    return build_and_queue(plugin, st, head)
+
+
+def build_and_queue(plugin, st, head):
+    """Run the fork's workflow, check what it published and queue it for install; `head` is the upstream head it sits on."""
+    name = plugin["name"]
     conclusion, run_id = dispatch_and_wait(plugin)
     if conclusion != "success":
         st["failed_upstream"] = head
@@ -514,9 +528,10 @@ def sync_one(plugin, state):
     return finish_install(plugin, st, st["pending_install"])
 
 
-def finish_install(plugin, st, pending):
+def finish_install(plugin, st, pending, while_running=False):
     name = plugin["name"]
-    if game_running():
+    running = game_running()
+    if running and not while_running:
         log(f"{name}: build {pending['sha'][:7]} ready; waiting for the game to close before installing")
         return
     install(plugin, pending["dest"])
@@ -533,8 +548,9 @@ def finish_install(plugin, st, pending):
     st.pop("failed_branch", None)
     st.pop("note", None)
     set_attention(name, None)
-    log(f"{name}: installed build {pending['sha'][:7]} (upstream {pending['upstream'][:7]}); {note}")
-    notify(f"{name} updated", f"Rebased on upstream {pending['upstream'][:7]}; loads at the next launch. {note}.")
+    when = "while the game runs; it loads when the plugin is switched off and on" if running else "loads at the next launch"
+    log(f"{name}: installed build {pending['sha'][:7]} (upstream {pending['upstream'][:7]}), {when}; {note}")
+    notify(f"{name} updated", f"Build {pending['sha'][:7]} on upstream {pending['upstream'][:7]}; {when}. {note}.")
 
 
 def main():
@@ -587,5 +603,24 @@ def main():
         save_state(state)
 
 
+def by_hand(action, name):
+    plugin = next((p for p in PLUGINS if p["name"] == name), None)
+    if plugin is None:
+        sys.exit(f"unknown plugin {name}; known: {', '.join(p['name'] for p in PLUGINS)}")
+    state = load_state()
+    st = state.setdefault(name, {})
+    if action == "--build":
+        log(f"{name}: running the fork's workflow for {branch_head(plugin)[:7]}, a change made in the fork itself")
+        build_and_queue(plugin, st, upstream_head(plugin))
+    elif st.get("pending_install"):
+        finish_install(plugin, st, st["pending_install"], while_running=True)
+    else:
+        print(f"{name}: no build is waiting")
+    save_state(state)
+
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 3 and sys.argv[1] in ("--build", "--install-now"):
+        by_hand(sys.argv[1], sys.argv[2])
+    else:
+        main()
