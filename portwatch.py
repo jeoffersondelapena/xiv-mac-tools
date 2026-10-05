@@ -705,8 +705,17 @@ class ExitWatch:
         gone = end_process(pid)
         boot_note(f"pid {pid}: STUCK CLOSING - still running {age:.0f}s after the game began to close; "
                   f"{'ended' if gone else 'could not be ended'}; {memory}")
-        notify("Game stuck closing", f"A game window had been closing for {age:.0f}s and was ended. Nothing else to do.")
-        set_attention("GameExit", event_note(f"a game window was stuck closing for {age:.0f} s and was ended", out))
+        notify("Game stuck closing", f"A game window had been closing for {age:.0f}s and "
+               + ("was ended. Nothing else to do." if gone else "could not be ended."))
+        set_attention("GameExit", exit_note(age, gone, out))
+
+
+def exit_note(age, gone, capture):
+    """An ended window leaves the player nothing to do and its capture has never shown a cause, so only a window that
+    is still there gets a note; the report and the boot log keep the record either way."""
+    if gone:
+        return None
+    return event_note(f"a game window was stuck closing for {age:.0f} s and could not be ended", capture)
 
 
 def notify(title, text):

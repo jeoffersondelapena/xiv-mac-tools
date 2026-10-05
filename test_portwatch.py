@@ -819,10 +819,14 @@ class StuckClosing(unittest.TestCase):
             self.assertIn("Unloading vnavmesh", f.read())
         self.assertEqual([], [n for n in os.listdir(os.path.join(base, "wedge-watch")) if n.startswith("exit-sample-")])
         self.assertEqual(["Game stuck closing"], notices)
-        self.assertEqual("GameExit", notes[0][0])
-        self.assertRegex(notes[0][1], r"^a game window was stuck closing for 12\d s and was ended at \d\d:\d\d; capture exit-stuck-\d{6}-%d\.txt$" % pid)
+        self.assertEqual([("GameExit", None)], notes)
         self.assertIn("STUCK CLOSING", lines[0])
         self.assertIn("ended", lines[0])
+
+    def test_only_a_stuck_window_that_could_not_be_ended_leaves_a_note(self):
+        self.assertIsNone(pw.exit_note(125.0, True, "/tmp/exit-stuck-101500-7.txt"))
+        self.assertRegex(pw.exit_note(125.0, False, "/tmp/exit-stuck-101500-7.txt"),
+                         r"^a game window was stuck closing for 125 s and could not be ended at \d\d:\d\d; capture exit-stuck-101500-7\.txt$")
 
     def test_a_process_is_ended_and_then_no_longer_alive(self):
         import subprocess
