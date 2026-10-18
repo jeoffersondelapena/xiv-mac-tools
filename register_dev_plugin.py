@@ -2,7 +2,8 @@
 """Register a locally built plugin with Dalamud as a dev plugin, enabled. Game must be closed.
 
 usage: register_dev_plugin.py <path to the built .dll> <InternalName>
-Backs up dalamudConfig.json to wedge-watch/backups/<stamp>/ first. Idempotent.
+Backs up dalamudConfig.json to wedge-watch/backups/<stamp>/ first. Idempotent. An installed copy with the same
+InternalName (a fork of a repo plugin) is switched off, since Dalamud loads only one of the two.
 """
 import copy, datetime, json, os, re, shutil, subprocess, sys, uuid
 
@@ -58,9 +59,15 @@ def register(dll, internal_name):
         template = next(e for e in profile if e.get("InternalName") == "Browsingway")
         profile.append({**template, "InternalName": internal_name, "WorkingPluginId": plugin_id, "IsEnabled": True})
         print("profile entry added (enabled)")
+    for e in profile:
+        if e.get("InternalName") == internal_name and e.get("WorkingPluginId") != plugin_id and e.get("IsEnabled"):
+            e["IsEnabled"] = False
+            print(f"installed copy of {internal_name} switched off")
 
+    # Dalamud writes this file with CRLF under Wine; keep whatever the file uses.
+    newline = "\r\n" if b"\r\n" in open(cfg_path, "rb").read(4096) else "\n"
     tmp = cfg_path + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", newline=newline) as f:
         json.dump(cfg, f, indent=2)
     os.replace(tmp, cfg_path)
     print(f"registered {internal_name} from {target}; backup in {backup}")

@@ -66,6 +66,9 @@ PLUGINS = [
     {"name": "GatherBuddyReborn", "fork": "jeoffersondelapena/GatherBuddyReborn", "upstream": "FFXIV-CombatReborn/GatherBuddyReborn", "upstream_branch": "main",
      "clone": os.path.expanduser("~/Projects/gbr-fork"), "branch": "patches",
      "install_dir": os.path.expanduser("~/Projects/gbr-fork/GatherBuddy/bin/Release"), "manifest": "GatherBuddyReborn.json"},
+    {"name": "ICE", "fork": "jeoffersondelapena/Ices-Cosmic-Exploration", "upstream": "LeontopodiumNivale14/Ices-Cosmic-Exploration", "upstream_branch": "Main-Branch",
+     "clone": os.path.expanduser("~/Projects/ice-fork"), "branch": "patches",
+     "install_dir": os.path.expanduser("~/Projects/ice-fork/ICE/bin/Release"), "manifest": "ICE.json"},
 ]
 
 
