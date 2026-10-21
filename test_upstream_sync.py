@@ -400,18 +400,19 @@ class GearPlan(unittest.TestCase):
         self.assertEqual(("7.6", "https://na.finalfantasyxiv.com/lodestone/topics/detail/eee/"), us.newest_patch_notes(self.LOG_NEXT))
         self.assertIsNone(us.newest_patch_notes("<p>maintenance</p>"))
         self.assertEqual(["thundersteep", "sacks of nuts"], us.notes_terms(self.NOTES))
+        self.assertEqual(["prune ponzecake"], us.notes_terms("<p>The effects of Prune Ponzecake have been adjusted.</p>", ["Prune Ponzecake", "Nachos"]))
 
     def test_patch_notes_naming_the_plan_leave_a_note_only_for_notes_not_seen_before(self):
         pages = {us.LODESTONE_LOG: self.LOG}
-        state = {}
+        state = {"Gear plan": {"items": {"Quickarm Materia XII": [690, "Skill Speed:54"]}}}
         self.assertIsNone(us.gear_notes_check(state, "2026.10.13.0000.0000", pages.__getitem__))
         self.assertEqual("https://na.finalfantasyxiv.com/lodestone/topics/detail/bbb/", state["Gear plan"]["notes_url"])
         self.assertIsNone(us.gear_notes_check(state, "2026.10.16.0000.0000", pages.__getitem__))
         self.assertEqual("2026.10.16.0000.0000", state["Gear plan"]["notes_version"])
         pages[us.LODESTONE_LOG] = self.LOG_NEXT
-        pages["https://na.finalfantasyxiv.com/lodestone/topics/detail/eee/"] = self.NOTES
+        pages["https://na.finalfantasyxiv.com/lodestone/topics/detail/eee/"] = self.NOTES + "<p>Quickarm Materia XII now grants more skill speed.</p>"
         note = us.gear_notes_check(state, "2026.11.10.0000.0000", pages.__getitem__)
-        self.assertEqual("the patch 7.6 notes mention thundersteep, sacks of nuts; the gear plan page may be out of date", note)
+        self.assertEqual("the patch 7.6 notes mention thundersteep, sacks of nuts, materia xii, quickarm materia xii; the gear plan page may be out of date", note)
         self.assertEqual([("Gear plan", note)], self.calls)
         self.assertIsNone(us.gear_notes_check(state, "2026.11.10.0000.0000", lambda url: self.fail("fetched again")))
 

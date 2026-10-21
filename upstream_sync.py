@@ -59,7 +59,7 @@ LODESTONE_LOG = LODESTONE + "/lodestone/special/patchnote_log/"
 GEAR_TERMS = ("bygone brass", "thundersteep", "universal tomestone", "mnemonics", "treno rain", "courtly lover",
               "everkeep certificate", "phantom vision", "occultum", "eclipticum", r"sacks? of nuts",
               r"(ordelle|montiont|ranperre) coin", "heavy holoblade", "final final fixative", "enlightenment silver",
-              r"materia xii", r"materia xiii", "quickarm", "savage aim", "savage might", "heavens' eye", "nachos", "caramel popcorn", "gemdraught")
+              r"materia xii", r"materia xiii", "gemdraught")
 # settings policies re-checked when their plugin's installed version changes
 POLICIES = [
     {"name": "GatherBuddyReborn", "tool": SETTINGS_TOOL,
@@ -588,10 +588,15 @@ def newest_patch_notes(log_html):
     return best
 
 
-def notes_terms(html):
-    """The plan's items and currencies the notes mention, as written there."""
+def notes_terms(html, names=()):
+    """The plan's currencies and mechanics, and every item name the snapshot holds, that the notes mention."""
     text = re.sub(r"<[^>]+>", " ", html).lower()
-    return [m.group(0) for m in (re.search(t, text) for t in GEAR_TERMS) if m]
+    patterns = list(GEAR_TERMS) + [re.escape(n.lower()) for n in names]
+    found = []
+    for m in (re.search(t, text) for t in patterns):
+        if m and m.group(0) not in found:
+            found.append(m.group(0))
+    return found
 
 
 def gear_notes_check(state, version, fetch_text=http_text):
@@ -607,7 +612,7 @@ def gear_notes_check(state, version, fetch_text=http_text):
     st["notes_version"], st["notes_url"] = version, url
     if first or url == previous:
         return None
-    hits = notes_terms(fetch_text(url))
+    hits = notes_terms(fetch_text(url), st.get("items", {}).keys())
     if not hits:
         return None
     note = f"the patch {patch} notes mention {', '.join(hits[:4])}; the gear plan page may be out of date"
