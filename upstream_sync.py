@@ -49,6 +49,11 @@ GEAR_SOURCE = "Gear plan"
 GEAR_MIN_LEVEL = 790
 GEAR_QUERY = ("https://v2.xivapi.com/api/search?sheets=Item&limit=500&fields=Name,LevelItem@as(raw),EquipSlotCategory@as(raw)"
               "&query=" + urllib.parse.quote(f"+LevelItem>={GEAR_MIN_LEVEL}"))
+LODESTONE = "https://na.finalfantasyxiv.com"
+LODESTONE_LOG = LODESTONE + "/lodestone/special/patchnote_log/"
+GEAR_TERMS = ("bygone brass", "thundersteep", "universal tomestone", "mnemonics", "treno rain", "courtly lover",
+              "everkeep certificate", "phantom vision", "occultum", "eclipticum", r"sacks? of nuts",
+              r"(ordelle|montiont|ranperre) coin", "heavy holoblade", "final final fixative", "enlightenment silver")
 # settings policies re-checked when their plugin's installed version changes
 POLICIES = [
     {"name": "GatherBuddyReborn", "tool": SETTINGS_TOOL,
@@ -514,12 +519,57 @@ def gear_check(state, version, api_key, fetch=xivapi_json):
     return note
 
 
-def gear_plan_updated(state, api_key, fetch=xivapi_json):
+def http_text(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 xiv-mac-tools/1"})
+    return urllib.request.urlopen(req, timeout=60).read().decode("utf-8", "replace")
+
+
+def newest_patch_notes(log_html):
+    """(patch, url) of the highest-numbered 'Patch X.Y Notes' link; the log page is not in date order."""
+    best = None
+    for href, text in re.findall(r'<a[^>]+href="(/lodestone/topics/detail/[0-9a-f]+/)"[^>]*>(.*?)</a>', log_html, re.S):
+        m = re.search(r"Patch (\d+\.\d+)", re.sub(r"<[^>]+>", "", text))
+        if m and (best is None or float(m.group(1)) > float(best[0])):
+            best = (m.group(1), LODESTONE + href)
+    return best
+
+
+def notes_terms(html):
+    """The plan's items and currencies the notes mention, as written there."""
+    text = re.sub(r"<[^>]+>", " ", html).lower()
+    return [m.group(0) for m in (re.search(t, text) for t in GEAR_TERMS) if m]
+
+
+def gear_notes_check(state, version, fetch_text=http_text):
+    """Each new game version: scan the newest patch notes for the plan's names; the first look is the baseline."""
+    st = state.setdefault(GEAR_SOURCE, {})
+    if not version or version == st.get("notes_version"):
+        return None
+    newest = newest_patch_notes(fetch_text(LODESTONE_LOG))
+    if not newest:
+        return None
+    patch, url = newest
+    first, previous = "notes_url" not in st, st.get("notes_url")
+    st["notes_version"], st["notes_url"] = version, url
+    if first or url == previous:
+        return None
+    hits = notes_terms(fetch_text(url))
+    if not hits:
+        return None
+    note = f"the patch {patch} notes mention {', '.join(hits[:4])}; the gear plan page may be out of date"
+    remember_note(st, GEAR_SOURCE, note)
+    return note
+
+
+def gear_plan_updated(state, api_key, version, fetch=xivapi_json, fetch_text=http_text):
     """The plan page was re-checked: the present becomes the baseline and the note goes."""
     st = state.setdefault(GEAR_SOURCE, {})
     items = gear_items(fetch)
     if items:
         st["api_key"], st["items"] = api_key, items
+    newest = newest_patch_notes(fetch_text(LODESTONE_LOG))
+    if newest:
+        st["notes_version"], st["notes_url"] = version, newest[1]
     st.pop("note", None)
     set_attention(GEAR_SOURCE, None)
 
@@ -658,6 +708,13 @@ def main():
     except Exception as ex:
         log(f"gear check: {type(ex).__name__}: {ex}")
     try:
+        note = gear_notes_check(state, version)
+        if note:
+            log(f"gear plan: {note}")
+            notify("Gear plan may be out of date", note[:200])
+    except Exception as ex:
+        log(f"patch notes check: {type(ex).__name__}: {ex}")
+    try:
         if patch_regen_needed(state, version, key, game_running()):
             regenerate_after_patch(state, version, key)
     except Exception as ex:
@@ -708,7 +765,7 @@ if __name__ == "__main__":
         by_hand(sys.argv[1], sys.argv[2])
     elif len(sys.argv) == 2 and sys.argv[1] == "--gear-plan-updated":
         state = load_state()
-        gear_plan_updated(state, xivapi_key())
+        gear_plan_updated(state, xivapi_key(), game_version())
         save_state(state)
         print(f"{GEAR_SOURCE}: baseline of {len(state[GEAR_SOURCE].get('items', {}))} items taken, note cleared")
     else:

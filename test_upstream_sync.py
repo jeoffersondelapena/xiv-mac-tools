@@ -362,11 +362,38 @@ class GearPlan(unittest.TestCase):
         self.assertEqual([("Gear plan", note)], self.calls)
         self.assertIn(("Gear plan", note), us.reassert_notes(state))
 
-    def test_an_updated_plan_resets_the_baseline_and_clears_the_note(self):
-        state = {"Gear plan": {"api_key": "key-a", "items": {}, "note": "stale"}}
-        us.gear_plan_updated(state, "key-b", lambda url: self.PAGE)
+    LOG = ('<a href="/lodestone/topics/detail/aaa/">Patch 7.5 Notes</a> <a href="/lodestone/topics/detail/bbb/"><span>Patch 7.57 Notes</span></a>'
+           ' <a href="/lodestone/topics/detail/ccc/">Patch 7.56 Notes</a> <a href="/lodestone/topics/detail/ddd/">Patch 7.4 Notes</a>')
+    LOG_NEXT = LOG + ' <a href="/lodestone/topics/detail/eee/">Patch 7.6 Notes</a>'
+    NOTES = "<p>The following items have been added to the <b>Sacks of Nuts</b> exchange: Thundersteeped Twine.</p><p>Nothing about rings.</p>"
+
+    def test_the_newest_notes_are_the_highest_patch_number_not_the_first_link(self):
+        self.assertEqual(("7.57", "https://na.finalfantasyxiv.com/lodestone/topics/detail/bbb/"), us.newest_patch_notes(self.LOG))
+        self.assertEqual(("7.6", "https://na.finalfantasyxiv.com/lodestone/topics/detail/eee/"), us.newest_patch_notes(self.LOG_NEXT))
+        self.assertIsNone(us.newest_patch_notes("<p>maintenance</p>"))
+        self.assertEqual(["thundersteep", "sacks of nuts"], us.notes_terms(self.NOTES))
+
+    def test_patch_notes_naming_the_plan_leave_a_note_only_for_notes_not_seen_before(self):
+        pages = {us.LODESTONE_LOG: self.LOG}
+        state = {}
+        self.assertIsNone(us.gear_notes_check(state, "2026.10.13.0000.0000", pages.__getitem__))
+        self.assertEqual("https://na.finalfantasyxiv.com/lodestone/topics/detail/bbb/", state["Gear plan"]["notes_url"])
+        self.assertIsNone(us.gear_notes_check(state, "2026.10.16.0000.0000", pages.__getitem__))
+        self.assertEqual("2026.10.16.0000.0000", state["Gear plan"]["notes_version"])
+        pages[us.LODESTONE_LOG] = self.LOG_NEXT
+        pages["https://na.finalfantasyxiv.com/lodestone/topics/detail/eee/"] = self.NOTES
+        note = us.gear_notes_check(state, "2026.11.10.0000.0000", pages.__getitem__)
+        self.assertEqual("the patch 7.6 notes mention thundersteep, sacks of nuts; the gear plan page may be out of date", note)
+        self.assertEqual([("Gear plan", note)], self.calls)
+        self.assertIsNone(us.gear_notes_check(state, "2026.11.10.0000.0000", lambda url: self.fail("fetched again")))
+
+    def test_an_updated_plan_resets_both_baselines_and_clears_the_note(self):
+        state = {"Gear plan": {"api_key": "key-a", "items": {}, "note": "stale", "notes_url": "old"}}
+        us.gear_plan_updated(state, "key-b", "2026.11.10.0000.0000", lambda url: self.PAGE, lambda url: self.LOG_NEXT)
         self.assertNotIn("note", state["Gear plan"])
         self.assertEqual("key-b", state["Gear plan"]["api_key"])
+        self.assertEqual("https://na.finalfantasyxiv.com/lodestone/topics/detail/eee/", state["Gear plan"]["notes_url"])
+        self.assertEqual("2026.11.10.0000.0000", state["Gear plan"]["notes_version"])
         self.assertEqual([("Gear plan", None)], self.calls)
 
 
