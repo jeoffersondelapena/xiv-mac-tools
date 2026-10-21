@@ -427,6 +427,8 @@ def regenerate_after_patch(state, version, api_key):
         notify("GatherBuddy Reborn lists need a hand", f"Regeneration for game {version} failed: {result or err}"[:200])
         set_attention("GatherBuddyReborn", f"the lists could not be regenerated for game {version}")
         return
+    # an earlier failed try's note must not outlive the success; a note the state still holds stays
+    set_attention("GatherBuddyReborn", standing_note(state, "GatherBuddyReborn"))
     code, settings, err = run_tool([SETTINGS_TOOL])
     if "differ" in settings:
         code, settings, err = run_tool([SETTINGS_TOOL, "--write"])
@@ -468,6 +470,11 @@ def save_state(state):
     with open(tmp, "w") as f:
         json.dump(state, f, indent=2)
     os.replace(tmp, STATE)
+
+
+def standing_note(state, source):
+    """The note the state would re-assert for `source` at the next tick, if any."""
+    return (state.get(source) or {}).get("note") or (state.get("policy_notes") or {}).get(source)
 
 
 def remember_note(st, source, note):

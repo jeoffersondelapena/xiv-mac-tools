@@ -180,6 +180,23 @@ class PatchAndWikiChores(unittest.TestCase):
         self.assertFalse(us.patch_regen_needed(state, "2026.10.20.0000.0000", "key-b", running=True))
         self.assertTrue(us.patch_regen_needed(state, "2026.10.20.0000.0000", "key-b", running=False))
 
+    def test_a_successful_regeneration_clears_the_failed_try_note_but_keeps_a_standing_one(self):
+        calls = []
+        orig_run, orig_set, orig_notify = us.run_tool, us.set_attention, us.notify
+        us.run_tool = lambda args: (0, "RESULT: written 3 lists", "")
+        us.set_attention = lambda source, note, *a: calls.append((source, note))
+        us.notify = lambda *a, **k: None
+        try:
+            us.regenerate_after_patch({}, "2026.10.16.0000.0000", "key-b")
+            self.assertIn(("GatherBuddyReborn", None), calls)
+            calls.clear()
+            state = {"policy_notes": {"GatherBuddyReborn": "the settings policy needs a look after the update to 7.6"}}
+            us.regenerate_after_patch(state, "2026.10.16.0000.0000", "key-b")
+            self.assertIn(("GatherBuddyReborn", "the settings policy needs a look after the update to 7.6"), calls)
+            self.assertNotIn(("GatherBuddyReborn", None), calls)
+        finally:
+            us.run_tool, us.set_attention, us.notify = orig_run, orig_set, orig_notify
+
     def test_a_data_source_update_alone_or_unknown_values_change_nothing(self):
         state = {"patch": {"game_version": "2026.09.15.0000.0000", "api_key": "key-a"}}
         self.assertFalse(us.patch_regen_needed(state, "2026.09.15.0000.0000", "key-b", running=False))
