@@ -315,9 +315,11 @@ class Installing(unittest.TestCase):
 
 
 class GearPlan(unittest.TestCase):
-    PAGE = {"results": [
-        {"fields": {"Name": "Augmented Bygone Brass Ring of Aiming", "LevelItem": 790, "EquipSlotCategory": 12}},
-        {"fields": {"Name": "Rose Garnet", "LevelItem": 790, "EquipSlotCategory": 0}}]}
+    RING = {"Name": "Augmented Bygone Brass Ring of Aiming", "LevelItem": 790, "EquipSlotCategory": 12,
+            "BaseParam": [{"fields": {"Name": "Dexterity"}}, {"fields": {"Name": "Critical Hit"}}], "BaseParamValue": [402, 148],
+            "BaseParamSpecial": [], "BaseParamValueSpecial": []}
+    PAGE = {"results": [{"fields": RING}, {"fields": {"Name": "Rose Garnet", "LevelItem": 790, "EquipSlotCategory": 0}}]}
+    RING_PRINT = "Dexterity:402,Critical Hit:148|"
 
     def setUp(self):
         self.calls = []
@@ -333,28 +335,44 @@ class GearPlan(unittest.TestCase):
         """A data source whose food, potion and materia queries come back empty."""
         return lambda url: {"results": []} if "ItemUICategory" in url else page
 
-    def test_only_equipment_counts_for_gear_while_food_potions_and_materia_count_as_they_are(self):
+    def test_gear_food_and_materia_each_get_a_stat_fingerprint_and_paging_follows_the_cursor(self):
         first = dict(self.PAGE, next="abc")
-        second = {"results": [{"fields": {"Name": "Phantom Sword Occultum", "LevelItem@as(raw)": 795, "EquipSlotCategory@as(raw)": 1}},
-                              {"fields": {"Name": "Phantom Shield Occultum", "LevelItem": {"value": 795}, "EquipSlotCategory": {"value": 2}}}]}
-        food = {"results": [{"fields": {"Name": "Nachos", "LevelItem@as(raw)": 770, "EquipSlotCategory@as(raw)": 0}}]}
+        second = {"results": [{"fields": {"Name": "Phantom Sword Occultum", "LevelItem@as(raw)": 795, "EquipSlotCategory@as(raw)": 1,
+                                          "BaseParam": [{"fields": {"Name": "Strength"}}], "BaseParamValue": [500]}}]}
+        food = {"results": [{"fields": {"Name": "Nachos", "LevelItem@as(raw)": 770, "EquipSlotCategory@as(raw)": 0, "ItemAction": {"fields": {"Data": [48, 702]}}}}]}
+        food_row = {"fields": {"BaseParam": [{"fields": {"Name": "Critical Hit"}}], "IsRelative": [True], "Value": [8], "Max": [120], "ValueHQ": [10], "MaxHQ": [151]}}
+        materia = {"results": [{"fields": {"Name": "Savage Aim Materia XII", "LevelItem@as(raw)": 690, "EquipSlotCategory@as(raw)": 0}}]}
+        sheet = {"rows": [{"fields": {"BaseParam": {"fields": {"Name": "Critical Hit"}}, "Item": [{"fields": {"Name": "Savage Aim Materia XI"}}, {"fields": {"Name": "Savage Aim Materia XII"}}], "Value": [18, 54]}}]}
         urls = []
 
         def fetch(url):
             urls.append(url)
+            if "ItemFood/702" in url:
+                return food_row
+            if "sheet/Materia" in url:
+                return sheet
             if "ItemUICategory%3D46" in url:
                 return food
+            if "ItemUICategory%3D58" in url:
+                return materia
             if "ItemUICategory" in url:
                 return {"results": []}
             return second if "cursor=abc" in url else first
-        self.assertEqual({"Augmented Bygone Brass Ring of Aiming": 790, "Phantom Sword Occultum": 795, "Phantom Shield Occultum": 795, "Nachos": 770},
+        self.assertEqual({"Augmented Bygone Brass Ring of Aiming": [790, self.RING_PRINT], "Phantom Sword Occultum": [795, "Strength:500|"],
+                          "Nachos": [770, "Critical Hit:%8/120/10/151"], "Savage Aim Materia XII": [690, "Critical Hit:54"]},
                          us.gear_items(fetch))
-        self.assertEqual(5, len(urls))
+        self.assertEqual(7, len(urls))
+
+    def test_a_stat_change_to_a_known_item_leaves_a_note_too(self):
+        state = {"Gear plan": {"api_key": "key-a", "items": {"Augmented Bygone Brass Ring of Aiming": [790, "Dexterity:402,Critical Hit:140|"]}}}
+        note = us.gear_check(state, "2026.11.10.0000.0000", "key-b", self.gear_only(self.PAGE))
+        self.assertEqual("the game data for 2026.11.10.0000.0000 changed the stats of 1 (e.g. Augmented Bygone Brass Ring of Aiming) among the items "
+                         "the gear plan cares about, gear at item level 790 or above, food, potions and materia; the gear plan page may be out of date", note)
 
     def test_the_first_look_is_the_baseline_and_an_unmoved_data_source_is_not_fetched(self):
         state = {}
         self.assertIsNone(us.gear_check(state, "2026.10.16.0000.0000", "key-a", self.gear_only(self.PAGE)))
-        self.assertEqual({"Augmented Bygone Brass Ring of Aiming": 790}, state["Gear plan"]["items"])
+        self.assertEqual({"Augmented Bygone Brass Ring of Aiming": [790, self.RING_PRINT]}, state["Gear plan"]["items"])
 
         def no_fetch(url):
             raise AssertionError("fetched although the data source did not move")
@@ -362,13 +380,12 @@ class GearPlan(unittest.TestCase):
         self.assertEqual([], self.calls)
 
     def test_new_high_level_gear_after_a_patch_leaves_a_standing_note(self):
-        state = {"Gear plan": {"api_key": "key-a", "items": {"Augmented Bygone Brass Ring of Aiming": 790}}}
+        state = {"Gear plan": {"api_key": "key-a", "items": {"Augmented Bygone Brass Ring of Aiming": [790, self.RING_PRINT]}}}
         page = {"results": self.PAGE["results"] + [
             {"fields": {"Name": "Eighth Umbral Ring of Aiming", "LevelItem": 800, "EquipSlotCategory": 12}},
             {"fields": {"Name": "Eighth Umbral Hat of Aiming", "LevelItem": 800, "EquipSlotCategory": 3}}]}
         note = us.gear_check(state, "2026.11.10.0000.0000", "key-b", self.gear_only(page))
-        self.assertIn("added 2 item(s) the gear plan may care about, gear at item level 790 or above, food, potions or materia "
-                      "(highest 800, e.g. Eighth Umbral Hat of Aiming)", note)
+        self.assertIn("added 2 (highest item level 800, e.g. Eighth Umbral Hat of Aiming) among the items the gear plan cares about", note)
         self.assertEqual(note, state["Gear plan"]["note"])
         self.assertEqual([("Gear plan", note)], self.calls)
         self.assertIn(("Gear plan", note), us.reassert_notes(state))

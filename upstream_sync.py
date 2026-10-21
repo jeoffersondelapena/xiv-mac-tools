@@ -47,7 +47,10 @@ CODEX_REFRESH_DAYS = 7
 WRATH_TOOL = os.path.expanduser("~/.claude/skills/wrath-settings/wrath_check.py")
 GEAR_SOURCE = "Gear plan"
 GEAR_MIN_LEVEL = 790
-GEAR_SEARCH = "https://v2.xivapi.com/api/search?sheets=Item&limit=500&fields=Name,LevelItem@as(raw),EquipSlotCategory@as(raw)&query="
+GEAR_SEARCH = ("https://v2.xivapi.com/api/search?sheets=Item&limit=500&fields=Name,LevelItem@as(raw),EquipSlotCategory@as(raw),"
+               "BaseParam[].Name,BaseParamValue,BaseParamSpecial[].Name,BaseParamValueSpecial,ItemAction.Data&query=")
+ITEM_FOOD = "https://v2.xivapi.com/api/sheet/ItemFood/{}?fields=BaseParam[].Name,IsRelative,Value,Max,ValueHQ,MaxHQ"
+MATERIA_SHEET = "https://v2.xivapi.com/api/sheet/Materia?limit=100&fields=BaseParam.Name,Item[].Name,Value"
 # the plan's consumables too: a new food or potion tier, or a new materia grade, moves the best melds
 GEAR_QUERIES = {"gear": f"+LevelItem>={GEAR_MIN_LEVEL}", "food": "+ItemUICategory=46 +LevelItem>=770",
                 "potions": "+ItemUICategory=44 +LevelItem>=770", "materia": "+ItemUICategory=58 +LevelItem>=690"}
@@ -55,7 +58,8 @@ LODESTONE = "https://na.finalfantasyxiv.com"
 LODESTONE_LOG = LODESTONE + "/lodestone/special/patchnote_log/"
 GEAR_TERMS = ("bygone brass", "thundersteep", "universal tomestone", "mnemonics", "treno rain", "courtly lover",
               "everkeep certificate", "phantom vision", "occultum", "eclipticum", r"sacks? of nuts",
-              r"(ordelle|montiont|ranperre) coin", "heavy holoblade", "final final fixative", "enlightenment silver")
+              r"(ordelle|montiont|ranperre) coin", "heavy holoblade", "final final fixative", "enlightenment silver",
+              r"materia xii", r"materia xiii", "quickarm", "savage aim", "savage might", "heavens' eye", "nachos", "caramel popcorn", "gemdraught")
 # settings policies re-checked when their plugin's installed version changes
 POLICIES = [
     {"name": "GatherBuddyReborn", "tool": SETTINGS_TOOL,
@@ -480,9 +484,37 @@ def raw(fields, name):
     return value.get("value") if isinstance(value, dict) else value
 
 
+def param_text(names, values):
+    return ",".join(f"{n['fields']['Name'] if isinstance(n, dict) else n}:{v}" for n, v in zip(names, values) if v)
+
+
+def food_fingerprint(fetch, fields):
+    """The meal's or potion's bonuses, read from the ItemFood row its action points at."""
+    data = (fields.get("ItemAction") or {}).get("fields", {}).get("Data") or []
+    if len(data) < 2 or not data[1]:
+        return ""
+    f = fetch(ITEM_FOOD.format(data[1])).get("fields", {})
+    return ",".join(f"{p['fields'].get('Name')}:{'%' if rel else ''}{v}/{m}/{vh}/{mh}"
+                    for p, rel, v, m, vh, mh in zip(f.get("BaseParam", []), f.get("IsRelative", []), f.get("Value", []),
+                                                     f.get("Max", []), f.get("ValueHQ", []), f.get("MaxHQ", [])) if p.get("fields", {}).get("Name"))
+
+
+def materia_values(fetch):
+    """{materia item name: stat value} from the Materia sheet."""
+    out = {}
+    for row in fetch(MATERIA_SHEET).get("rows", []):
+        f = row["fields"]
+        for item, value in zip(f.get("Item", []), f.get("Value", [])):
+            name = item.get("fields", {}).get("Name") if isinstance(item, dict) else None
+            if name:
+                out[name] = f"{f.get('BaseParam', {}).get('fields', {}).get('Name')}:{value}"
+    return out
+
+
 def gear_items(fetch=xivapi_json):
-    """{name: item level} for every equippable item at GEAR_MIN_LEVEL or above, plus the current food, potion and materia tiers."""
-    items = {}
+    """{name: [item level, stat fingerprint]} for every equippable item at GEAR_MIN_LEVEL or above and the current food, potion
+    and materia tiers; the fingerprint is how a stat change to an item the plan already knows is noticed."""
+    items, materia = {}, None
     for kind, query in GEAR_QUERIES.items():
         base = GEAR_SEARCH + urllib.parse.quote(query)
         url = base
@@ -490,22 +522,39 @@ def gear_items(fetch=xivapi_json):
             page = fetch(url)
             for row in page.get("results", []):
                 f = row["fields"]
-                if kind != "gear" or raw(f, "EquipSlotCategory"):
-                    items[f["Name"]] = raw(f, "LevelItem")
+                if kind == "gear" and not raw(f, "EquipSlotCategory"):
+                    continue
+                if kind == "gear":
+                    print_ = param_text(f.get("BaseParam", []), f.get("BaseParamValue", [])) + "|" + param_text(f.get("BaseParamSpecial", []), f.get("BaseParamValueSpecial", []))
+                elif kind == "materia":
+                    materia = materia_values(fetch) if materia is None else materia
+                    print_ = materia.get(f["Name"], "")
+                else:
+                    print_ = food_fingerprint(fetch, f)
+                items[f["Name"]] = [raw(f, "LevelItem"), print_]
             if not page.get("next"):
                 break
             url = base + "&cursor=" + urllib.parse.quote(str(page["next"]))
     return items
 
 
+def level_of(entry):
+    return entry[0] if isinstance(entry, list) else entry
+
+
 def gear_note(version, known, items):
-    """The note for gear the data source gained since the snapshot, or None."""
+    """The note for items the data source gained or changed since the snapshot, or None."""
     new = sorted(n for n in items if n not in known)
-    if not new:
+    changed = sorted(n for n in items if n in known and isinstance(known[n], list) and known[n][1] != items[n][1])
+    if not new and not changed:
         return None
-    top = max(items[n] for n in new)
-    return (f"the game data for {version or 'the new patch'} added {len(new)} item(s) the gear plan may care about, gear at item level "
-            f"{GEAR_MIN_LEVEL} or above, food, potions or materia (highest {top}, e.g. {new[0]}); the gear plan page may be out of date")
+    parts = []
+    if new:
+        parts.append(f"added {len(new)} (highest item level {max(level_of(items[n]) for n in new)}, e.g. {new[0]})")
+    if changed:
+        parts.append(f"changed the stats of {len(changed)} (e.g. {changed[0]})")
+    return (f"the game data for {version or 'the new patch'} {' and '.join(parts)} among the items the gear plan cares about, gear at item level "
+            f"{GEAR_MIN_LEVEL} or above, food, potions and materia; the gear plan page may be out of date")
 
 
 def gear_check(state, version, api_key, fetch=xivapi_json):
