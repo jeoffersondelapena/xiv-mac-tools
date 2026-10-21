@@ -47,8 +47,10 @@ CODEX_REFRESH_DAYS = 7
 WRATH_TOOL = os.path.expanduser("~/.claude/skills/wrath-settings/wrath_check.py")
 GEAR_SOURCE = "Gear plan"
 GEAR_MIN_LEVEL = 790
-GEAR_QUERY = ("https://v2.xivapi.com/api/search?sheets=Item&limit=500&fields=Name,LevelItem@as(raw),EquipSlotCategory@as(raw)"
-              "&query=" + urllib.parse.quote(f"+LevelItem>={GEAR_MIN_LEVEL}"))
+GEAR_SEARCH = "https://v2.xivapi.com/api/search?sheets=Item&limit=500&fields=Name,LevelItem@as(raw),EquipSlotCategory@as(raw)&query="
+# the plan's consumables too: a new food or potion tier, or a new materia grade, moves the best melds
+GEAR_QUERIES = {"gear": f"+LevelItem>={GEAR_MIN_LEVEL}", "food": "+ItemUICategory=46 +LevelItem>=770",
+                "potions": "+ItemUICategory=44 +LevelItem>=770", "materia": "+ItemUICategory=58 +LevelItem>=690"}
 LODESTONE = "https://na.finalfantasyxiv.com"
 LODESTONE_LOG = LODESTONE + "/lodestone/special/patchnote_log/"
 GEAR_TERMS = ("bygone brass", "thundersteep", "universal tomestone", "mnemonics", "treno rain", "courtly lover",
@@ -479,17 +481,20 @@ def raw(fields, name):
 
 
 def gear_items(fetch=xivapi_json):
-    """{name: item level} for every equippable item at GEAR_MIN_LEVEL or above in the data source."""
-    items, url = {}, GEAR_QUERY
-    for _ in range(10):
-        page = fetch(url)
-        for row in page.get("results", []):
-            f = row["fields"]
-            if raw(f, "EquipSlotCategory"):
-                items[f["Name"]] = raw(f, "LevelItem")
-        if not page.get("next"):
-            break
-        url = GEAR_QUERY + "&cursor=" + urllib.parse.quote(str(page["next"]))
+    """{name: item level} for every equippable item at GEAR_MIN_LEVEL or above, plus the current food, potion and materia tiers."""
+    items = {}
+    for kind, query in GEAR_QUERIES.items():
+        base = GEAR_SEARCH + urllib.parse.quote(query)
+        url = base
+        for _ in range(10):
+            page = fetch(url)
+            for row in page.get("results", []):
+                f = row["fields"]
+                if kind != "gear" or raw(f, "EquipSlotCategory"):
+                    items[f["Name"]] = raw(f, "LevelItem")
+            if not page.get("next"):
+                break
+            url = base + "&cursor=" + urllib.parse.quote(str(page["next"]))
     return items
 
 
@@ -499,8 +504,8 @@ def gear_note(version, known, items):
     if not new:
         return None
     top = max(items[n] for n in new)
-    return (f"the game data for {version or 'the new patch'} added {len(new)} item(s) at item level {GEAR_MIN_LEVEL} or above "
-            f"(highest {top}, e.g. {new[0]}); the gear plan page may name weaker gear than is now available")
+    return (f"the game data for {version or 'the new patch'} added {len(new)} item(s) the gear plan may care about, gear at item level "
+            f"{GEAR_MIN_LEVEL} or above, food, potions or materia (highest {top}, e.g. {new[0]}); the gear plan page may be out of date")
 
 
 def gear_check(state, version, api_key, fetch=xivapi_json):

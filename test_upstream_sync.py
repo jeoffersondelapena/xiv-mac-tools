@@ -328,22 +328,32 @@ class GearPlan(unittest.TestCase):
     def tearDown(self):
         us.set_attention, us.log = self.orig
 
-    def test_only_equipment_counts_and_paging_follows_the_cursor(self):
+    @staticmethod
+    def gear_only(page):
+        """A data source whose food, potion and materia queries come back empty."""
+        return lambda url: {"results": []} if "ItemUICategory" in url else page
+
+    def test_only_equipment_counts_for_gear_while_food_potions_and_materia_count_as_they_are(self):
         first = dict(self.PAGE, next="abc")
         second = {"results": [{"fields": {"Name": "Phantom Sword Occultum", "LevelItem@as(raw)": 795, "EquipSlotCategory@as(raw)": 1}},
                               {"fields": {"Name": "Phantom Shield Occultum", "LevelItem": {"value": 795}, "EquipSlotCategory": {"value": 2}}}]}
+        food = {"results": [{"fields": {"Name": "Nachos", "LevelItem@as(raw)": 770, "EquipSlotCategory@as(raw)": 0}}]}
         urls = []
 
         def fetch(url):
             urls.append(url)
+            if "ItemUICategory%3D46" in url:
+                return food
+            if "ItemUICategory" in url:
+                return {"results": []}
             return second if "cursor=abc" in url else first
-        self.assertEqual({"Augmented Bygone Brass Ring of Aiming": 790, "Phantom Sword Occultum": 795, "Phantom Shield Occultum": 795},
+        self.assertEqual({"Augmented Bygone Brass Ring of Aiming": 790, "Phantom Sword Occultum": 795, "Phantom Shield Occultum": 795, "Nachos": 770},
                          us.gear_items(fetch))
-        self.assertEqual(2, len(urls))
+        self.assertEqual(5, len(urls))
 
     def test_the_first_look_is_the_baseline_and_an_unmoved_data_source_is_not_fetched(self):
         state = {}
-        self.assertIsNone(us.gear_check(state, "2026.10.16.0000.0000", "key-a", lambda url: self.PAGE))
+        self.assertIsNone(us.gear_check(state, "2026.10.16.0000.0000", "key-a", self.gear_only(self.PAGE)))
         self.assertEqual({"Augmented Bygone Brass Ring of Aiming": 790}, state["Gear plan"]["items"])
 
         def no_fetch(url):
@@ -356,8 +366,9 @@ class GearPlan(unittest.TestCase):
         page = {"results": self.PAGE["results"] + [
             {"fields": {"Name": "Eighth Umbral Ring of Aiming", "LevelItem": 800, "EquipSlotCategory": 12}},
             {"fields": {"Name": "Eighth Umbral Hat of Aiming", "LevelItem": 800, "EquipSlotCategory": 3}}]}
-        note = us.gear_check(state, "2026.11.10.0000.0000", "key-b", lambda url: page)
-        self.assertIn("added 2 item(s) at item level 790 or above (highest 800, e.g. Eighth Umbral Hat of Aiming)", note)
+        note = us.gear_check(state, "2026.11.10.0000.0000", "key-b", self.gear_only(page))
+        self.assertIn("added 2 item(s) the gear plan may care about, gear at item level 790 or above, food, potions or materia "
+                      "(highest 800, e.g. Eighth Umbral Hat of Aiming)", note)
         self.assertEqual(note, state["Gear plan"]["note"])
         self.assertEqual([("Gear plan", note)], self.calls)
         self.assertIn(("Gear plan", note), us.reassert_notes(state))
@@ -389,7 +400,7 @@ class GearPlan(unittest.TestCase):
 
     def test_an_updated_plan_resets_both_baselines_and_clears_the_note(self):
         state = {"Gear plan": {"api_key": "key-a", "items": {}, "note": "stale", "notes_url": "old"}}
-        us.gear_plan_updated(state, "key-b", "2026.11.10.0000.0000", lambda url: self.PAGE, lambda url: self.LOG_NEXT)
+        us.gear_plan_updated(state, "key-b", "2026.11.10.0000.0000", self.gear_only(self.PAGE), lambda url: self.LOG_NEXT)
         self.assertNotIn("note", state["Gear plan"])
         self.assertEqual("key-b", state["Gear plan"]["api_key"])
         self.assertEqual("https://na.finalfantasyxiv.com/lodestone/topics/detail/eee/", state["Gear plan"]["notes_url"])
