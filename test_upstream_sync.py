@@ -314,5 +314,61 @@ class Installing(unittest.TestCase):
         self.assertNotEqual(before, os.stat(target).st_ino)
 
 
+class GearPlan(unittest.TestCase):
+    PAGE = {"results": [
+        {"fields": {"Name": "Augmented Bygone Brass Ring of Aiming", "LevelItem": 790, "EquipSlotCategory": 12}},
+        {"fields": {"Name": "Rose Garnet", "LevelItem": 790, "EquipSlotCategory": 0}}]}
+
+    def setUp(self):
+        self.calls = []
+        self.orig = us.set_attention, us.log
+        us.set_attention = lambda source, note, *a: self.calls.append((source, note))
+        us.log = lambda msg: None
+
+    def tearDown(self):
+        us.set_attention, us.log = self.orig
+
+    def test_only_equipment_counts_and_paging_follows_the_cursor(self):
+        first = dict(self.PAGE, next="abc")
+        second = {"results": [{"fields": {"Name": "Phantom Sword Occultum", "LevelItem@as(raw)": 795, "EquipSlotCategory@as(raw)": 1}},
+                              {"fields": {"Name": "Phantom Shield Occultum", "LevelItem": {"value": 795}, "EquipSlotCategory": {"value": 2}}}]}
+        urls = []
+
+        def fetch(url):
+            urls.append(url)
+            return second if "cursor=abc" in url else first
+        self.assertEqual({"Augmented Bygone Brass Ring of Aiming": 790, "Phantom Sword Occultum": 795, "Phantom Shield Occultum": 795},
+                         us.gear_items(fetch))
+        self.assertEqual(2, len(urls))
+
+    def test_the_first_look_is_the_baseline_and_an_unmoved_data_source_is_not_fetched(self):
+        state = {}
+        self.assertIsNone(us.gear_check(state, "2026.10.16.0000.0000", "key-a", lambda url: self.PAGE))
+        self.assertEqual({"Augmented Bygone Brass Ring of Aiming": 790}, state["Gear plan"]["items"])
+
+        def no_fetch(url):
+            raise AssertionError("fetched although the data source did not move")
+        self.assertIsNone(us.gear_check(state, "2026.10.16.0000.0000", "key-a", no_fetch))
+        self.assertEqual([], self.calls)
+
+    def test_new_high_level_gear_after_a_patch_leaves_a_standing_note(self):
+        state = {"Gear plan": {"api_key": "key-a", "items": {"Augmented Bygone Brass Ring of Aiming": 790}}}
+        page = {"results": self.PAGE["results"] + [
+            {"fields": {"Name": "Eighth Umbral Ring of Aiming", "LevelItem": 800, "EquipSlotCategory": 12}},
+            {"fields": {"Name": "Eighth Umbral Hat of Aiming", "LevelItem": 800, "EquipSlotCategory": 3}}]}
+        note = us.gear_check(state, "2026.11.10.0000.0000", "key-b", lambda url: page)
+        self.assertIn("added 2 item(s) at item level 790 or above (highest 800, e.g. Eighth Umbral Hat of Aiming)", note)
+        self.assertEqual(note, state["Gear plan"]["note"])
+        self.assertEqual([("Gear plan", note)], self.calls)
+        self.assertIn(("Gear plan", note), us.reassert_notes(state))
+
+    def test_an_updated_plan_resets_the_baseline_and_clears_the_note(self):
+        state = {"Gear plan": {"api_key": "key-a", "items": {}, "note": "stale"}}
+        us.gear_plan_updated(state, "key-b", lambda url: self.PAGE)
+        self.assertNotIn("note", state["Gear plan"])
+        self.assertEqual("key-b", state["Gear plan"]["api_key"])
+        self.assertEqual([("Gear plan", None)], self.calls)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

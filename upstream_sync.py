@@ -19,7 +19,7 @@ By hand, for a change made in a fork itself (pushed first): `--build NAME` runs 
 queues the verified build exactly as a sync would; `--install-now NAME` places a queued build while the game
 runs, for the player to switch the plugin off and on.
 """
-import datetime, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
+import datetime, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.parse, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from attention import ATTENTION, attention_lines, set_attention  # noqa: E402,F401
 
@@ -45,6 +45,10 @@ CODEX_DATA = os.path.expanduser("~/Projects/ffxiv-codex/data/codex-data.json")
 CODEX_LIVE = os.path.join(BASE, "pluginConfigs", "Codex", "codex-data.json")
 CODEX_REFRESH_DAYS = 7
 WRATH_TOOL = os.path.expanduser("~/.claude/skills/wrath-settings/wrath_check.py")
+GEAR_SOURCE = "Gear plan"
+GEAR_MIN_LEVEL = 790
+GEAR_QUERY = ("https://v2.xivapi.com/api/search?sheets=Item&limit=500&fields=Name,LevelItem@as(raw),EquipSlotCategory@as(raw)"
+              "&query=" + urllib.parse.quote(f"+LevelItem>={GEAR_MIN_LEVEL}"))
 # settings policies re-checked when their plugin's installed version changes
 POLICIES = [
     {"name": "GatherBuddyReborn", "tool": SETTINGS_TOOL,
@@ -458,6 +462,68 @@ def refresh_codex(state, now):
     log("Codex data refreshed; the plugin picks it up at the next launch or /codex reload")
 
 
+def xivapi_json(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "xiv-mac-tools/1"})
+    return json.load(urllib.request.urlopen(req, timeout=60))
+
+
+def raw(fields, name):
+    """A column asked for @as(raw) comes back under that suffixed key; a plain one as a dict with a value."""
+    value = fields.get(name + "@as(raw)", fields.get(name))
+    return value.get("value") if isinstance(value, dict) else value
+
+
+def gear_items(fetch=xivapi_json):
+    """{name: item level} for every equippable item at GEAR_MIN_LEVEL or above in the data source."""
+    items, url = {}, GEAR_QUERY
+    for _ in range(10):
+        page = fetch(url)
+        for row in page.get("results", []):
+            f = row["fields"]
+            if raw(f, "EquipSlotCategory"):
+                items[f["Name"]] = raw(f, "LevelItem")
+        if not page.get("next"):
+            break
+        url = GEAR_QUERY + "&cursor=" + urllib.parse.quote(str(page["next"]))
+    return items
+
+
+def gear_note(version, known, items):
+    """The note for gear the data source gained since the snapshot, or None."""
+    new = sorted(n for n in items if n not in known)
+    if not new:
+        return None
+    top = max(items[n] for n in new)
+    return (f"the game data for {version or 'the new patch'} added {len(new)} item(s) at item level {GEAR_MIN_LEVEL} or above "
+            f"(highest {top}, e.g. {new[0]}); the gear plan page may name weaker gear than is now available")
+
+
+def gear_check(state, version, api_key, fetch=xivapi_json):
+    """Each new data-source version: compare the high-level items with the snapshot; the first look is the baseline."""
+    st = state.setdefault(GEAR_SOURCE, {})
+    if not api_key or api_key == st.get("api_key"):
+        return None
+    items = gear_items(fetch)
+    if not items:
+        return None
+    known = st.get("items")
+    st["api_key"], st["items"] = api_key, items
+    note = gear_note(version, known, items) if known is not None else None
+    if note:
+        remember_note(st, GEAR_SOURCE, note)
+    return note
+
+
+def gear_plan_updated(state, api_key, fetch=xivapi_json):
+    """The plan page was re-checked: the present becomes the baseline and the note goes."""
+    st = state.setdefault(GEAR_SOURCE, {})
+    items = gear_items(fetch)
+    if items:
+        st["api_key"], st["items"] = api_key, items
+    st.pop("note", None)
+    set_attention(GEAR_SOURCE, None)
+
+
 def load_state():
     try:
         return json.load(open(STATE))
@@ -585,6 +651,13 @@ def main():
     plugin_versions = [(pol["name"], plugin_version(pol["manifest"])) for pol in POLICIES]
     seed(state, version, key, now, plugin_versions)
     try:
+        note = gear_check(state, version, key)
+        if note:
+            log(f"gear plan: {note}")
+            notify("Gear plan may be out of date", note[:200])
+    except Exception as ex:
+        log(f"gear check: {type(ex).__name__}: {ex}")
+    try:
         if patch_regen_needed(state, version, key, game_running()):
             regenerate_after_patch(state, version, key)
     except Exception as ex:
@@ -633,5 +706,10 @@ def by_hand(action, name):
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] in ("--build", "--install-now"):
         by_hand(sys.argv[1], sys.argv[2])
+    elif len(sys.argv) == 2 and sys.argv[1] == "--gear-plan-updated":
+        state = load_state()
+        gear_plan_updated(state, xivapi_key())
+        save_state(state)
+        print(f"{GEAR_SOURCE}: baseline of {len(state[GEAR_SOURCE].get('items', {}))} items taken, note cleared")
     else:
         main()
