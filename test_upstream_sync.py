@@ -182,10 +182,11 @@ class PatchAndWikiChores(unittest.TestCase):
 
     def test_a_successful_regeneration_clears_the_failed_try_note_but_keeps_a_standing_one(self):
         calls = []
-        orig_run, orig_set, orig_notify = us.run_tool, us.set_attention, us.notify
+        orig_run, orig_set, orig_notify, orig_log = us.run_tool, us.set_attention, us.notify, us.log
         us.run_tool = lambda args: (0, "RESULT: written 3 lists", "")
         us.set_attention = lambda source, note, *a: calls.append((source, note))
         us.notify = lambda *a, **k: None
+        us.log = lambda msg: None
         try:
             us.regenerate_after_patch({}, "2026.10.16.0000.0000", "key-b")
             self.assertIn(("GatherBuddyReborn", None), calls)
@@ -195,7 +196,7 @@ class PatchAndWikiChores(unittest.TestCase):
             self.assertIn(("GatherBuddyReborn", "the settings policy needs a look after the update to 7.6"), calls)
             self.assertNotIn(("GatherBuddyReborn", None), calls)
         finally:
-            us.run_tool, us.set_attention, us.notify = orig_run, orig_set, orig_notify
+            us.run_tool, us.set_attention, us.notify, us.log = orig_run, orig_set, orig_notify, orig_log
 
     def test_a_data_source_update_alone_or_unknown_values_change_nothing(self):
         state = {"patch": {"game_version": "2026.09.15.0000.0000", "api_key": "key-a"}}
