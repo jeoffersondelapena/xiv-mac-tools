@@ -369,8 +369,8 @@ class GearPlan(unittest.TestCase):
         state = {"Gear plan": {"api_key": "key-a", "items": {"Augmented Bygone Brass Ring of Aiming": [790, "Dexterity:402,Critical Hit:140|"]}}}
         note = us.gear_check(state, "2026.11.10.0000.0000", "key-b", self.gear_only(self.PAGE))
         self.assertEqual("the game data for 2026.11.10.0000.0000 changed the stats of 1 (e.g. Augmented Bygone Brass Ring of Aiming) among the items "
-                         "the gear plan cares about, gear at item level 790 or above, food, potions and materia; the gear plan page may be out of date; "
-                         "re-run the gear skill for the affected jobs", note)
+                         "the gear plan cares about, gear at item level 790 or above, food, potions and materia; the gear skill's picks may be out of date; "
+                         "re-run it for the affected jobs", note)
 
     def test_the_first_look_is_the_baseline_and_an_unmoved_data_source_is_not_fetched(self):
         state = {}
@@ -415,8 +415,8 @@ class GearPlan(unittest.TestCase):
         pages[us.LODESTONE_LOG] = self.LOG_NEXT
         pages["https://na.finalfantasyxiv.com/lodestone/topics/detail/eee/"] = self.NOTES + "<p>Quickarm Materia XII now grants more skill speed.</p>"
         note = us.gear_notes_check(state, "2026.11.10.0000.0000", pages.__getitem__)
-        self.assertEqual("the patch 7.6 notes mention thundersteep, sacks of nuts, materia xii, quickarm materia xii; the gear plan page may be out of date; "
-                         "re-run the gear skill for the jobs that use them", note)
+        self.assertEqual("the patch 7.6 notes mention thundersteep, sacks of nuts, materia xii, quickarm materia xii; the gear skill's picks may be out of date; "
+                         "re-run it for the jobs that use them", note)
         self.assertEqual([("Gear plan", note)], self.calls)
         self.assertIsNone(us.gear_notes_check(state, "2026.11.10.0000.0000", lambda url: self.fail("fetched again")))
 
@@ -458,7 +458,7 @@ class GearSkill(unittest.TestCase):
             {"fields": {"Name": "Eighth Umbral Ring of Aiming", "LevelItem": 800, "EquipSlotCategory": 12, "ClassJobCategory": {"fields": {"Name": "BRD MCH DNC"}}}},
             {"fields": {"Name": "Eighth Umbral Hat of Scouting", "LevelItem": 800, "EquipSlotCategory": 3, "ClassJobCategory": {"fields": {"Name": "NIN VPR"}}}}]}
         note = us.gear_check(state, "2026.11.10.0000.0000", "key-b", self.gear_only(page))
-        self.assertTrue(note.endswith("; re-run the gear skill for BRD, DNC, MCH, NIN, VPR"), note)
+        self.assertTrue(note.endswith("; re-run it for BRD, DNC, MCH, NIN, VPR"), note)
 
     def test_gear_for_all_classes_or_a_new_food_means_every_job(self):
         known = {"Augmented Bygone Brass Ring of Aiming": [790, "Dexterity:402|", "BRD MCH DNC"]}

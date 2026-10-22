@@ -575,7 +575,7 @@ def gear_note(version, known, items, floor=GEAR_FLOORS["gear"]):
     # food, potions and materia carry no job category: a change to them concerns every job
     jobs = "every job" if any(len(items[n]) < 3 for n in new + changed) else jobs_text({items[n][2] for n in new + changed if items[n][2]})
     return (f"the game data for {version or 'the new patch'} {' and '.join(parts)} among the items the gear plan cares about, gear at item level "
-            f"{floor} or above, food, potions and materia; the gear plan page may be out of date; re-run the gear skill for {jobs}")
+            f"{floor} or above, food, potions and materia; the gear skill's picks may be out of date; re-run it for {jobs}")
 
 
 def gear_check(state, version, api_key, fetch=xivapi_json):
@@ -636,7 +636,7 @@ def gear_notes_check(state, version, fetch_text=http_text):
     hits = notes_terms(fetch_text(url), st.get("items", {}).keys())
     if not hits:
         return None
-    note = f"the patch {patch} notes mention {', '.join(hits[:4])}; the gear plan page may be out of date; re-run the gear skill for the jobs that use them"
+    note = f"the patch {patch} notes mention {', '.join(hits[:4])}; the gear skill's picks may be out of date; re-run it for the jobs that use them"
     remember_note(st, GEAR_SOURCE, note)
     return note
 
@@ -822,21 +822,21 @@ def main():
         note = gear_check(state, version, key)
         if note:
             log(f"gear plan: {note}")
-            notify("Gear plan may be out of date", note[:200])
+            notify("Gear picks may be out of date", note[:200])
     except Exception as ex:
         log(f"gear check: {type(ex).__name__}: {ex}")
     try:
         note = gear_notes_check(state, version)
         if note:
             log(f"gear plan: {note}")
-            notify("Gear plan may be out of date", note[:200])
+            notify("Gear picks may be out of date", note[:200])
     except Exception as ex:
         log(f"patch notes check: {type(ex).__name__}: {ex}")
     try:
         note = xivgear_sims_check(state)
         if note:
             log(f"gear plan: {note}")
-            notify("Gear plan may be out of date", note[:200])
+            notify("Gear picks may be out of date", note[:200])
     except Exception as ex:
         log(f"xivgear sims check: {type(ex).__name__}: {ex}")
     try:
