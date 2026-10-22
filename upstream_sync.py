@@ -48,12 +48,15 @@ WRATH_TOOL = os.path.expanduser("~/.claude/skills/wrath-settings/wrath_check.py"
 GEAR_SOURCE = "Gear plan"
 GEAR_MIN_LEVEL = 790
 GEAR_SEARCH = ("https://v2.xivapi.com/api/search?sheets=Item&limit=500&fields=Name,LevelItem@as(raw),EquipSlotCategory@as(raw),"
-               "BaseParam[].Name,BaseParamValue,BaseParamSpecial[].Name,BaseParamValueSpecial,ItemAction.Data&query=")
+               "BaseParam[].Name,BaseParamValue,BaseParamSpecial[].Name,BaseParamValueSpecial,ItemAction.Data,ClassJobCategory.Name&query=")
 ITEM_FOOD = "https://v2.xivapi.com/api/sheet/ItemFood/{}?fields=BaseParam[].Name,IsRelative,Value,Max,ValueHQ,MaxHQ"
 MATERIA_SHEET = "https://v2.xivapi.com/api/sheet/Materia?limit=100&fields=BaseParam.Name,Item[].Name,Value"
 # the plan's consumables too: a new food or potion tier, or a new materia grade, moves the best melds
 GEAR_QUERIES = {"gear": f"+LevelItem>={GEAR_MIN_LEVEL}", "food": "+ItemUICategory=46 +LevelItem>=770",
                 "potions": "+ItemUICategory=44 +LevelItem>=770", "materia": "+ItemUICategory=58 +LevelItem>=690"}
+# xivgear's job sims decide the gear skill's rankings, so a change to them is as good as a patch
+XIVGEAR_SIMS = "https://api.github.com/repos/xiv-gear-planner/gear-planner/commits?path=packages/sims/src&per_page=1"
+XIVGEAR_COMMIT = "https://api.github.com/repos/xiv-gear-planner/gear-planner/commits/{}"
 LODESTONE = "https://na.finalfantasyxiv.com"
 LODESTONE_LOG = LODESTONE + "/lodestone/special/patchnote_log/"
 GEAR_TERMS = ("bygone brass", "thundersteep", "universal tomestone", "mnemonics", "treno rain", "courtly lover",
@@ -531,7 +534,10 @@ def gear_items(fetch=xivapi_json):
                     print_ = materia.get(f["Name"], "")
                 else:
                     print_ = food_fingerprint(fetch, f)
-                items[f["Name"]] = [raw(f, "LevelItem"), print_]
+                entry = [raw(f, "LevelItem"), print_]
+                if kind == "gear":
+                    entry.append(((f.get("ClassJobCategory") or {}).get("fields") or {}).get("Name", ""))
+                items[f["Name"]] = entry
             if not page.get("next"):
                 break
             url = base + "&cursor=" + urllib.parse.quote(str(page["next"]))
@@ -540,6 +546,14 @@ def gear_items(fetch=xivapi_json):
 
 def level_of(entry):
     return entry[0] if isinstance(entry, list) else entry
+
+
+def jobs_text(categories):
+    """'every job', or the job codes a set of ClassJobCategory names spells out."""
+    if any(c.startswith(("All Classes", "Disciples")) for c in categories):
+        return "every job"
+    jobs = sorted({j for c in categories for j in c.split() if j.isupper()})
+    return ", ".join(jobs) if jobs else "the affected jobs"
 
 
 def gear_note(version, known, items):
@@ -553,8 +567,10 @@ def gear_note(version, known, items):
         parts.append(f"added {len(new)} (highest item level {max(level_of(items[n]) for n in new)}, e.g. {new[0]})")
     if changed:
         parts.append(f"changed the stats of {len(changed)} (e.g. {changed[0]})")
+    # food, potions and materia carry no job category: a change to them concerns every job
+    jobs = "every job" if any(len(items[n]) < 3 for n in new + changed) else jobs_text({items[n][2] for n in new + changed if items[n][2]})
     return (f"the game data for {version or 'the new patch'} {' and '.join(parts)} among the items the gear plan cares about, gear at item level "
-            f"{GEAR_MIN_LEVEL} or above, food, potions and materia; the gear plan page may be out of date")
+            f"{GEAR_MIN_LEVEL} or above, food, potions and materia; the gear plan page may be out of date; re-run the gear skill for {jobs}")
 
 
 def gear_check(state, version, api_key, fetch=xivapi_json):
@@ -615,7 +631,39 @@ def gear_notes_check(state, version, fetch_text=http_text):
     hits = notes_terms(fetch_text(url), st.get("items", {}).keys())
     if not hits:
         return None
-    note = f"the patch {patch} notes mention {', '.join(hits[:4])}; the gear plan page may be out of date"
+    note = f"the patch {patch} notes mention {', '.join(hits[:4])}; the gear plan page may be out of date; re-run the gear skill for the jobs that use them"
+    remember_note(st, GEAR_SOURCE, note)
+    return note
+
+
+def sim_jobs(files):
+    """The jobs whose sims a xivgear commit touched; anything shared counts for every job."""
+    jobs, shared = set(), False
+    for path in files:
+        m = re.match(r"packages/sims/src/(?:tank|healer|melee|ranged|caster|blu)/([a-z]{3})", path)
+        if m:
+            jobs.add(m.group(1).upper())
+        elif path.startswith("packages/sims/src/"):
+            shared = True
+    return "every job" if shared or not jobs else ", ".join(sorted(jobs))
+
+
+def xivgear_sims_check(state, fetch_text=http_text):
+    """Every tick: has xivgear committed a sim change since the last look? The first look is the baseline."""
+    st = state.setdefault(GEAR_SOURCE, {})
+    latest = json.loads(fetch_text(XIVGEAR_SIMS))
+    if not latest:
+        return None
+    sha, date = latest[0]["sha"], latest[0]["commit"]["committer"]["date"][:10]
+    previous = st.get("sims_sha")
+    if sha == previous:
+        return None
+    st["sims_sha"] = sha
+    if previous is None:
+        return None
+    files = [f["filename"] for f in json.loads(fetch_text(XIVGEAR_COMMIT.format(sha))).get("files", [])]
+    jobs = sim_jobs(files)
+    note = f"xivgear changed its {jobs} sim on {date} (commit {sha[:7]}); re-run the gear skill for {jobs}"
     remember_note(st, GEAR_SOURCE, note)
     return note
 
@@ -629,6 +677,12 @@ def gear_plan_updated(state, api_key, version, fetch=xivapi_json, fetch_text=htt
     newest = newest_patch_notes(fetch_text(LODESTONE_LOG))
     if newest:
         st["notes_version"], st["notes_url"] = version, newest[1]
+    try:
+        latest = json.loads(fetch_text(XIVGEAR_SIMS))
+        if latest:
+            st["sims_sha"] = latest[0]["sha"]
+    except Exception as ex:
+        log(f"xivgear sims baseline: {type(ex).__name__}: {ex}")
     st.pop("note", None)
     set_attention(GEAR_SOURCE, None)
 
@@ -773,6 +827,13 @@ def main():
             notify("Gear plan may be out of date", note[:200])
     except Exception as ex:
         log(f"patch notes check: {type(ex).__name__}: {ex}")
+    try:
+        note = xivgear_sims_check(state)
+        if note:
+            log(f"gear plan: {note}")
+            notify("Gear plan may be out of date", note[:200])
+    except Exception as ex:
+        log(f"xivgear sims check: {type(ex).__name__}: {ex}")
     try:
         if patch_regen_needed(state, version, key, game_running()):
             regenerate_after_patch(state, version, key)
