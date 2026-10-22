@@ -46,14 +46,15 @@ CODEX_LIVE = os.path.join(BASE, "pluginConfigs", "Codex", "codex-data.json")
 CODEX_REFRESH_DAYS = 7
 WRATH_TOOL = os.path.expanduser("~/.claude/skills/wrath-settings/wrath_check.py")
 GEAR_SOURCE = "Gear plan"
-GEAR_MIN_LEVEL = 790
+# each kind's floor follows the data: the top item level seen minus this, so a new expansion raises it by itself
+GEAR_BELOW_TOP = 10
+GEAR_FLOORS = {"gear": 790, "food": 770, "potions": 770, "materia": 690}   # the first look's starting floors (patch 7.5x)
 GEAR_SEARCH = ("https://v2.xivapi.com/api/search?sheets=Item&limit=500&fields=Name,LevelItem@as(raw),EquipSlotCategory@as(raw),"
                "BaseParam[].Name,BaseParamValue,BaseParamSpecial[].Name,BaseParamValueSpecial,ItemAction.Data,ClassJobCategory.Name&query=")
 ITEM_FOOD = "https://v2.xivapi.com/api/sheet/ItemFood/{}?fields=BaseParam[].Name,IsRelative,Value,Max,ValueHQ,MaxHQ"
 MATERIA_SHEET = "https://v2.xivapi.com/api/sheet/Materia?limit=100&fields=BaseParam.Name,Item[].Name,Value"
 # the plan's consumables too: a new food or potion tier, or a new materia grade, moves the best melds
-GEAR_QUERIES = {"gear": f"+LevelItem>={GEAR_MIN_LEVEL}", "food": "+ItemUICategory=46 +LevelItem>=770",
-                "potions": "+ItemUICategory=44 +LevelItem>=770", "materia": "+ItemUICategory=58 +LevelItem>=690"}
+GEAR_KINDS = {"gear": "", "food": "+ItemUICategory=46 ", "potions": "+ItemUICategory=44 ", "materia": "+ItemUICategory=58 "}
 # xivgear's job sims decide the gear skill's rankings, so a change to them is as good as a patch
 XIVGEAR_SIMS = "https://api.github.com/repos/xiv-gear-planner/gear-planner/commits?path=packages/sims/src&per_page=1"
 XIVGEAR_COMMIT = "https://api.github.com/repos/xiv-gear-planner/gear-planner/commits/{}"
@@ -514,34 +515,38 @@ def materia_values(fetch):
     return out
 
 
-def gear_items(fetch=xivapi_json):
-    """{name: [item level, stat fingerprint]} for every equippable item at GEAR_MIN_LEVEL or above and the current food, potion
-    and materia tiers; the fingerprint is how a stat change to an item the plan already knows is noticed."""
-    items, materia = {}, None
-    for kind, query in GEAR_QUERIES.items():
-        base = GEAR_SEARCH + urllib.parse.quote(query)
-        url = base
+def gear_items(fetch=xivapi_json, floors=None):
+    """({name: [item level, stat fingerprint, job category]}, floors) for every equippable item, food, potion and materia
+    within GEAR_BELOW_TOP of its kind's top item level; the fingerprint is how a stat change to a known item is noticed.
+    The fetch starts at the last look's floors (or GEAR_FLOORS), so a new tier above them is seen and raises the floor."""
+    items, materia, new_floors = {}, None, {}
+    for kind, filt in GEAR_KINDS.items():
+        floor = (floors or {}).get(kind, GEAR_FLOORS[kind])
+        base = GEAR_SEARCH + urllib.parse.quote(f"{filt}+LevelItem>={floor}")
+        url, rows = base, []
         for _ in range(10):
             page = fetch(url)
-            for row in page.get("results", []):
-                f = row["fields"]
-                if kind == "gear" and not raw(f, "EquipSlotCategory"):
-                    continue
-                if kind == "gear":
-                    print_ = param_text(f.get("BaseParam", []), f.get("BaseParamValue", [])) + "|" + param_text(f.get("BaseParamSpecial", []), f.get("BaseParamValueSpecial", []))
-                elif kind == "materia":
-                    materia = materia_values(fetch) if materia is None else materia
-                    print_ = materia.get(f["Name"], "")
-                else:
-                    print_ = food_fingerprint(fetch, f)
-                entry = [raw(f, "LevelItem"), print_]
-                if kind == "gear":
-                    entry.append(((f.get("ClassJobCategory") or {}).get("fields") or {}).get("Name", ""))
-                items[f["Name"]] = entry
+            rows += [row["fields"] for row in page.get("results", []) if kind != "gear" or raw(row["fields"], "EquipSlotCategory")]
             if not page.get("next"):
                 break
             url = base + "&cursor=" + urllib.parse.quote(str(page["next"]))
-    return items
+        top = max([raw(f, "LevelItem") for f in rows] + [floor + GEAR_BELOW_TOP])
+        new_floors[kind] = top - GEAR_BELOW_TOP   # follows a new tier up, never drops below the floor it started from
+        for f in rows:
+            if raw(f, "LevelItem") < new_floors[kind]:
+                continue
+            if kind == "gear":
+                print_ = param_text(f.get("BaseParam", []), f.get("BaseParamValue", [])) + "|" + param_text(f.get("BaseParamSpecial", []), f.get("BaseParamValueSpecial", []))
+            elif kind == "materia":
+                materia = materia_values(fetch) if materia is None else materia
+                print_ = materia.get(f["Name"], "")
+            else:
+                print_ = food_fingerprint(fetch, f)
+            entry = [raw(f, "LevelItem"), print_]
+            if kind == "gear":
+                entry.append(((f.get("ClassJobCategory") or {}).get("fields") or {}).get("Name", ""))
+            items[f["Name"]] = entry
+    return items, new_floors
 
 
 def level_of(entry):
@@ -556,7 +561,7 @@ def jobs_text(categories):
     return ", ".join(jobs) if jobs else "the affected jobs"
 
 
-def gear_note(version, known, items):
+def gear_note(version, known, items, floor=GEAR_FLOORS["gear"]):
     """The note for items the data source gained or changed since the snapshot, or None."""
     new = sorted(n for n in items if n not in known)
     changed = sorted(n for n in items if n in known and isinstance(known[n], list) and known[n][1] != items[n][1])
@@ -570,7 +575,7 @@ def gear_note(version, known, items):
     # food, potions and materia carry no job category: a change to them concerns every job
     jobs = "every job" if any(len(items[n]) < 3 for n in new + changed) else jobs_text({items[n][2] for n in new + changed if items[n][2]})
     return (f"the game data for {version or 'the new patch'} {' and '.join(parts)} among the items the gear plan cares about, gear at item level "
-            f"{GEAR_MIN_LEVEL} or above, food, potions and materia; the gear plan page may be out of date; re-run the gear skill for {jobs}")
+            f"{floor} or above, food, potions and materia; the gear plan page may be out of date; re-run the gear skill for {jobs}")
 
 
 def gear_check(state, version, api_key, fetch=xivapi_json):
@@ -578,12 +583,12 @@ def gear_check(state, version, api_key, fetch=xivapi_json):
     st = state.setdefault(GEAR_SOURCE, {})
     if not api_key or api_key == st.get("api_key"):
         return None
-    items = gear_items(fetch)
+    items, floors = gear_items(fetch, st.get("floors"))
     if not items:
         return None
     known = st.get("items")
-    st["api_key"], st["items"] = api_key, items
-    note = gear_note(version, known, items) if known is not None else None
+    st["api_key"], st["items"], st["floors"] = api_key, items, floors
+    note = gear_note(version, known, items, floors["gear"]) if known is not None else None
     if note:
         remember_note(st, GEAR_SOURCE, note)
     return note
@@ -671,9 +676,9 @@ def xivgear_sims_check(state, fetch_text=http_text):
 def gear_plan_updated(state, api_key, version, fetch=xivapi_json, fetch_text=http_text):
     """The plan page was re-checked: the present becomes the baseline and the note goes."""
     st = state.setdefault(GEAR_SOURCE, {})
-    items = gear_items(fetch)
+    items, floors = gear_items(fetch, st.get("floors"))
     if items:
-        st["api_key"], st["items"] = api_key, items
+        st["api_key"], st["items"], st["floors"] = api_key, items, floors
     newest = newest_patch_notes(fetch_text(LODESTONE_LOG))
     if newest:
         st["notes_version"], st["notes_url"] = version, newest[1]

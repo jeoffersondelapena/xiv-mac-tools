@@ -359,9 +359,10 @@ class GearPlan(unittest.TestCase):
             if "ItemUICategory" in url:
                 return {"results": []}
             return second if "cursor=abc" in url else first
+        items, floors = us.gear_items(fetch)
         self.assertEqual({"Augmented Bygone Brass Ring of Aiming": [790, self.RING_PRINT, ""], "Phantom Sword Occultum": [795, "Strength:500|", ""],
-                          "Nachos": [770, "Critical Hit:%8/120/10/151"], "Savage Aim Materia XII": [690, "Critical Hit:54"]},
-                         us.gear_items(fetch))
+                          "Nachos": [770, "Critical Hit:%8/120/10/151"], "Savage Aim Materia XII": [690, "Critical Hit:54"]}, items)
+        self.assertEqual({"gear": 790, "food": 770, "potions": 770, "materia": 690}, floors)   # never below the starting floors
         self.assertEqual(7, len(urls))
 
     def test_a_stat_change_to_a_known_item_leaves_a_note_too(self):
@@ -496,4 +497,23 @@ class GearSkill(unittest.TestCase):
         us.gear_plan_updated(state, "key", "2026.10.16.0000.0000", lambda url: {"results": []}, fetch_text)
         self.assertEqual("b" * 40, state["Gear plan"]["sims_sha"])
         self.assertNotIn("note", state["Gear plan"])
+
+    def test_the_floors_follow_the_top_item_level_so_a_new_expansion_needs_no_edit(self):
+        state = {"Gear plan": {"api_key": "key-a", "items": {"Augmented Bygone Brass Ring of Aiming": [790, "Dexterity:402|", "BRD MCH DNC"]},
+                               "floors": {"gear": 780, "food": 760, "potions": 760, "materia": 680}}}
+        page = {"results": [
+            {"fields": {"Name": "Augmented Bygone Brass Ring of Aiming", "LevelItem": 790, "EquipSlotCategory": 12, "BaseParam": [{"fields": {"Name": "Dexterity"}}],
+                        "BaseParamValue": [402], "BaseParamSpecial": [], "BaseParamValueSpecial": [], "ClassJobCategory": {"fields": {"Name": "BRD MCH DNC"}}}},
+            {"fields": {"Name": "Eighth Umbral Ring of Aiming", "LevelItem": 850, "EquipSlotCategory": 12, "ClassJobCategory": {"fields": {"Name": "BRD MCH DNC"}}}}]}
+        urls = []
+
+        def fetch(url):
+            urls.append(url)
+            return {"results": []} if "ItemUICategory" in url else page
+        note = us.gear_check(state, "2027.01.10.0000.0000", "key-b", fetch)
+        self.assertIn("LevelItem%3E%3D780", urls[0])
+        self.assertEqual(840, state["Gear plan"]["floors"]["gear"])
+        self.assertEqual(["Eighth Umbral Ring of Aiming"], list(state["Gear plan"]["items"]))
+        self.assertTrue(note.startswith("the game data for 2027.01.10.0000.0000 added 1 (highest item level 850, e.g. Eighth Umbral Ring of Aiming)"), note)
+        self.assertIn("gear at item level 840 or above", note)
 
