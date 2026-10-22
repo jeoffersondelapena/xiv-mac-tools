@@ -324,12 +324,13 @@ class GearPlan(unittest.TestCase):
 
     def setUp(self):
         self.calls = []
-        self.orig = us.set_attention, us.log
+        self.orig = us.set_attention, us.log, us.tracked_jobs
         us.set_attention = lambda source, note, *a: self.calls.append((source, note))
         us.log = lambda msg: None
+        us.tracked_jobs = lambda: ["DNC", "VPR"]
 
     def tearDown(self):
-        us.set_attention, us.log = self.orig
+        us.set_attention, us.log, us.tracked_jobs = self.orig
 
     @staticmethod
     def gear_only(page):
@@ -370,7 +371,7 @@ class GearPlan(unittest.TestCase):
         note = us.gear_check(state, "2026.11.10.0000.0000", "key-b", self.gear_only(self.PAGE))
         self.assertEqual("the game data for 2026.11.10.0000.0000 changed the stats of 1 (e.g. Augmented Bygone Brass Ring of Aiming) among the items "
                          "the gear plan cares about, gear at item level 790 or above, food, potions and materia; the gear skill's picks may be out of date; "
-                         "re-run it for the affected jobs", note)
+                         "re-run it for DNC, VPR", note)
 
     def test_the_first_look_is_the_baseline_and_an_unmoved_data_source_is_not_fetched(self):
         state = {}
@@ -416,7 +417,7 @@ class GearPlan(unittest.TestCase):
         pages["https://na.finalfantasyxiv.com/lodestone/topics/detail/eee/"] = self.NOTES + "<p>Quickarm Materia XII now grants more skill speed.</p>"
         note = us.gear_notes_check(state, "2026.11.10.0000.0000", pages.__getitem__)
         self.assertEqual("the patch 7.6 notes mention thundersteep, sacks of nuts, materia xii, quickarm materia xii; the gear skill's picks may be out of date; "
-                         "re-run it for the jobs that use them", note)
+                         "re-run it for DNC, VPR", note)
         self.assertEqual([("Gear plan", note)], self.calls)
         self.assertIsNone(us.gear_notes_check(state, "2026.11.10.0000.0000", lambda url: self.fail("fetched again")))
 
@@ -439,12 +440,13 @@ class GearSkill(unittest.TestCase):
 
     def setUp(self):
         self.calls = []
-        self.orig = us.set_attention, us.log
+        self.orig = us.set_attention, us.log, us.tracked_jobs
         us.set_attention = lambda source, note, *a: self.calls.append((source, note))
         us.log = lambda msg: None
+        us.tracked_jobs = lambda: ["DNC", "VPR"]
 
     def tearDown(self):
-        us.set_attention, us.log = self.orig
+        us.set_attention, us.log, us.tracked_jobs = self.orig
 
     @staticmethod
     def gear_only(page):
@@ -458,12 +460,15 @@ class GearSkill(unittest.TestCase):
             {"fields": {"Name": "Eighth Umbral Ring of Aiming", "LevelItem": 800, "EquipSlotCategory": 12, "ClassJobCategory": {"fields": {"Name": "BRD MCH DNC"}}}},
             {"fields": {"Name": "Eighth Umbral Hat of Scouting", "LevelItem": 800, "EquipSlotCategory": 3, "ClassJobCategory": {"fields": {"Name": "NIN VPR"}}}}]}
         note = us.gear_check(state, "2026.11.10.0000.0000", "key-b", self.gear_only(page))
-        self.assertTrue(note.endswith("; re-run it for BRD, DNC, MCH, NIN, VPR"), note)
+        self.assertTrue(note.endswith("; re-run it for DNC, VPR"), note)
 
-    def test_gear_for_all_classes_or_a_new_food_means_every_job(self):
+    def test_all_classes_or_a_new_food_means_every_tracked_job_and_untracked_jobs_leave_no_note(self):
         known = {"Augmented Bygone Brass Ring of Aiming": [790, "Dexterity:402|", "BRD MCH DNC"]}
-        self.assertTrue(us.gear_note("x", known, dict(known, **{"Eighth Umbral Ring": [800, "", "All Classes"]})).endswith("for every job"))
-        self.assertTrue(us.gear_note("x", known, dict(known, **{"Spicy Nachos": [780, "Critical Hit:%8/120/10/151"]})).endswith("for every job"))
+        self.assertTrue(us.gear_note("x", known, dict(known, **{"Eighth Umbral Ring": [800, "", "All Classes"]})).endswith("for DNC, VPR"))
+        self.assertTrue(us.gear_note("x", known, dict(known, **{"Spicy Nachos": [780, "Critical Hit:%8/120/10/151"]})).endswith("for DNC, VPR"))
+        self.assertIsNone(us.gear_note("x", known, dict(known, **{"Eighth Umbral Shield": [800, "", "PLD"]})))
+        us.tracked_jobs = lambda: []
+        self.assertIsNone(us.gear_note("x", known, dict(known, **{"Eighth Umbral Ring": [800, "", "All Classes"]})))
 
     def test_a_xivgear_sim_change_names_the_job_and_the_first_look_is_the_baseline(self):
         commits = {"a" * 40: [], "b" * 40: ["packages/sims/src/melee/vpr/vpr_sheet_sim.ts", "packages/sims/src/ranged/dnc_sim.ts"],
@@ -480,12 +485,16 @@ class GearSkill(unittest.TestCase):
         self.assertEqual("a" * 40, state["Gear plan"]["sims_sha"])
         self.assertIsNone(us.xivgear_sims_check(state, fetch_text))
         current["sha"] = "b" * 40
-        self.assertEqual("xivgear changed its DNC, VPR sim on 2026-10-25 (commit bbbbbbb); re-run the gear skill for DNC, VPR", us.xivgear_sims_check(state, fetch_text))
-        self.assertEqual([("Gear plan", "xivgear changed its DNC, VPR sim on 2026-10-25 (commit bbbbbbb); re-run the gear skill for DNC, VPR")], self.calls)
+        self.assertEqual("xivgear changed its DNC, VPR sim on 2026-10-25 (commit bbbbbbb); re-run it for DNC, VPR", us.xivgear_sims_check(state, fetch_text))
+        self.assertEqual([("Gear plan", "xivgear changed its DNC, VPR sim on 2026-10-25 (commit bbbbbbb); re-run it for DNC, VPR")], self.calls)
         current["sha"] = "c" * 40
-        self.assertTrue(us.xivgear_sims_check(state, fetch_text).startswith("xivgear changed its every job sim"))
-        self.assertEqual("every job", us.sim_jobs(["packages/sims/package.json"]))
-        self.assertEqual("BLU, PLD", us.sim_jobs(["packages/sims/src/tank/pld/pld_sheet_sim.ts", "packages/sims/src/blu/blu_winged120.ts"]))
+        self.assertTrue(us.xivgear_sims_check(state, fetch_text).startswith("xivgear changed sim code shared by every job"))
+        self.assertIsNone(us.sim_jobs(["packages/sims/package.json"]))
+        self.assertEqual({"BLU", "PLD"}, us.sim_jobs(["packages/sims/src/tank/pld/pld_sheet_sim.ts", "packages/sims/src/blu/blu_winged120.ts"]))
+        commits["d" * 40] = ["packages/sims/src/tank/pld/pld_sheet_sim.ts"]
+        current["sha"] = "d" * 40
+        self.assertIsNone(us.xivgear_sims_check(state, fetch_text))   # a job without a sheet: the baseline moves, no note
+        self.assertEqual("d" * 40, state["Gear plan"]["sims_sha"])
 
     def test_an_updated_plan_takes_the_current_sim_commit_as_the_baseline(self):
         state = {"Gear plan": {"sims_sha": "a" * 40, "note": "old"}}

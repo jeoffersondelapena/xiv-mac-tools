@@ -553,12 +553,29 @@ def level_of(entry):
     return entry[0] if isinstance(entry, list) else entry
 
 
-def jobs_text(categories):
-    """'every job', or the job codes a set of ClassJobCategory names spells out."""
-    if any(c.startswith(("All Classes", "Disciples")) for c in categories):
-        return "every job"
-    jobs = sorted({j for c in categories for j in c.split() if j.isupper()})
-    return ", ".join(jobs) if jobs else "the affected jobs"
+TRACKED_SHEETS = os.path.expanduser("~/.claude/skills/xivgear-bis/runs/sheets.json")   # {JOB: [sheet keys]}
+
+
+def tracked_jobs():
+    """The jobs the gear skill keeps a sheet for; a note is only worth leaving for these."""
+    try:
+        return sorted(json.load(open(TRACKED_SHEETS)))
+    except (OSError, ValueError):
+        return []
+
+
+def affected_jobs(categories, everyone=False):
+    """The job codes a set of ClassJobCategory names spells out; None means every job (also for unknown categories)."""
+    if everyone or not categories or any(c.startswith(("All Classes", "Disciples")) for c in categories):
+        return None
+    return {j for c in categories for j in c.split() if j.isupper()} or None
+
+
+def jobs_to_rerun(affected):
+    """The tracked jobs among the affected ones (None = all of them) as text, or None when no tracked job is affected."""
+    tracked = tracked_jobs()
+    hit = tracked if affected is None else [j for j in tracked if j in affected]
+    return ", ".join(hit) if hit else None
 
 
 def gear_note(version, known, items, floor=GEAR_FLOORS["gear"]):
@@ -573,7 +590,11 @@ def gear_note(version, known, items, floor=GEAR_FLOORS["gear"]):
     if changed:
         parts.append(f"changed the stats of {len(changed)} (e.g. {changed[0]})")
     # food, potions and materia carry no job category: a change to them concerns every job
-    jobs = "every job" if any(len(items[n]) < 3 for n in new + changed) else jobs_text({items[n][2] for n in new + changed if items[n][2]})
+    affected = affected_jobs({items[n][2] for n in new + changed if len(items[n]) > 2 and items[n][2]},
+                             everyone=any(len(items[n]) < 3 for n in new + changed))
+    jobs = jobs_to_rerun(affected)
+    if jobs is None:   # nothing the user keeps a sheet for
+        return None
     return (f"the game data for {version or 'the new patch'} {' and '.join(parts)} among the items the gear plan cares about, gear at item level "
             f"{floor} or above, food, potions and materia; the gear skill's picks may be out of date; re-run it for {jobs}")
 
@@ -634,15 +655,16 @@ def gear_notes_check(state, version, fetch_text=http_text):
     if first or url == previous:
         return None
     hits = notes_terms(fetch_text(url), st.get("items", {}).keys())
-    if not hits:
+    jobs = jobs_to_rerun(None)
+    if not hits or jobs is None:
         return None
-    note = f"the patch {patch} notes mention {', '.join(hits[:4])}; the gear skill's picks may be out of date; re-run it for the jobs that use them"
+    note = f"the patch {patch} notes mention {', '.join(hits[:4])}; the gear skill's picks may be out of date; re-run it for {jobs}"
     remember_note(st, GEAR_SOURCE, note)
     return note
 
 
 def sim_jobs(files):
-    """The jobs whose sims a xivgear commit touched; anything shared counts for every job."""
+    """The jobs whose sims a xivgear commit touched; None when anything shared moved, which counts for every job."""
     jobs, shared = set(), False
     for path in files:
         m = re.match(r"packages/sims/src/(?:tank|healer|melee|ranged|caster|blu)/([a-z]{3})", path)
@@ -650,7 +672,7 @@ def sim_jobs(files):
             jobs.add(m.group(1).upper())
         elif path.startswith("packages/sims/src/"):
             shared = True
-    return "every job" if shared or not jobs else ", ".join(sorted(jobs))
+    return None if shared or not jobs else jobs
 
 
 def xivgear_sims_check(state, fetch_text=http_text):
@@ -667,8 +689,12 @@ def xivgear_sims_check(state, fetch_text=http_text):
     if previous is None:
         return None
     files = [f["filename"] for f in json.loads(fetch_text(XIVGEAR_COMMIT.format(sha))).get("files", [])]
-    jobs = sim_jobs(files)
-    note = f"xivgear changed its {jobs} sim on {date} (commit {sha[:7]}); re-run the gear skill for {jobs}"
+    changed = sim_jobs(files)
+    jobs = jobs_to_rerun(changed)
+    if jobs is None:
+        return None
+    what = "sim code shared by every job" if changed is None else f"its {', '.join(sorted(changed))} sim"
+    note = f"xivgear changed {what} on {date} (commit {sha[:7]}); re-run it for {jobs}"
     remember_note(st, GEAR_SOURCE, note)
     return note
 
