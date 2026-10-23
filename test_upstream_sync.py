@@ -476,7 +476,7 @@ class GearSkill(unittest.TestCase):
         current = {"sha": "a" * 40}
 
         def fetch_text(url):
-            if url == us.XIVGEAR_SIMS:
+            if url in us.XIVGEAR_WATCH:
                 return json.dumps([{"sha": current["sha"], "commit": {"committer": {"date": "2026-10-25T03:04:05Z"}}}])
             sha = url.rsplit("/", 1)[1]
             return json.dumps({"files": [{"filename": f} for f in commits[sha]]})
@@ -495,12 +495,18 @@ class GearSkill(unittest.TestCase):
         current["sha"] = "d" * 40
         self.assertIsNone(us.xivgear_sims_check(state, fetch_text))   # a job without a sheet: the baseline moves, no note
         self.assertEqual("d" * 40, state["Gear plan"]["sims_sha"])
+        commits["e" * 40] = ["packages/core/src/solving/gearset_generation.ts"]
+        current["sha"] = "e" * 40
+        self.assertEqual("xivgear changed its meld solver on 2026-10-25 (commit eeeeeee); re-run it for DNC, VPR", us.xivgear_sims_check(state, fetch_text))
+        commits["f" * 40] = ["packages/xivmath/src/xivmath.ts"]
+        current["sha"] = "f" * 40
+        self.assertTrue(us.xivgear_sims_check(state, fetch_text).startswith("xivgear changed its stat formulas"))
 
     def test_an_updated_plan_takes_the_current_sim_commit_as_the_baseline(self):
         state = {"Gear plan": {"sims_sha": "a" * 40, "note": "old"}}
 
         def fetch_text(url):
-            if url == us.XIVGEAR_SIMS:
+            if url in us.XIVGEAR_WATCH:
                 return json.dumps([{"sha": "b" * 40, "commit": {"committer": {"date": "2026-10-25T03:04:05Z"}}}])
             return "<html></html>"
         us.gear_plan_updated(state, "key", "2026.10.16.0000.0000", lambda url: {"results": []}, fetch_text)

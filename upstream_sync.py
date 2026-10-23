@@ -56,7 +56,9 @@ MATERIA_SHEET = "https://v2.xivapi.com/api/sheet/Materia?limit=100&fields=BasePa
 # the plan's consumables too: a new food or potion tier, or a new materia grade, moves the best melds
 GEAR_KINDS = {"gear": "", "food": "+ItemUICategory=46 ", "potions": "+ItemUICategory=44 ", "materia": "+ItemUICategory=58 "}
 # xivgear's job sims decide the gear skill's rankings, so a change to them is as good as a patch
-XIVGEAR_SIMS = "https://api.github.com/repos/xiv-gear-planner/gear-planner/commits?path=packages/sims/src&per_page=1"
+# everything that can move a solved set's score: the job sims, the meld solver and the stat formulas
+XIVGEAR_WATCH = [f"https://api.github.com/repos/xiv-gear-planner/gear-planner/commits?path={p}&per_page=1"
+                 for p in ("packages/sims/src", "packages/core/src/solving", "packages/xivmath/src")]
 XIVGEAR_COMMIT = "https://api.github.com/repos/xiv-gear-planner/gear-planner/commits/{}"
 LODESTONE = "https://na.finalfantasyxiv.com"
 LODESTONE_LOG = LODESTONE + "/lodestone/special/patchnote_log/"
@@ -664,24 +666,37 @@ def gear_notes_check(state, version, fetch_text=http_text):
 
 
 def sim_jobs(files):
-    """The jobs whose sims a xivgear commit touched; None when anything shared moved, which counts for every job."""
+    """The jobs whose sims a xivgear commit touched; None when anything shared moved (sim code for every job, the meld
+    solver or the stat formulas), which counts for every job."""
     jobs, shared = set(), False
     for path in files:
         m = re.match(r"packages/sims/src/(?:tank|healer|melee|ranged|caster|blu)/([a-z]{3})", path)
         if m:
             jobs.add(m.group(1).upper())
-        elif path.startswith("packages/sims/src/"):
+        elif path.startswith(("packages/sims/src/", "packages/core/src/solving/", "packages/xivmath/src/")):
             shared = True
     return None if shared or not jobs else jobs
 
 
+def xivgear_latest(fetch_text=http_text):
+    """(sha, date) of the newest commit touching any watched xivgear folder, or None."""
+    newest = None
+    for url in XIVGEAR_WATCH:
+        latest = json.loads(fetch_text(url))
+        if latest:
+            entry = (latest[0]["commit"]["committer"]["date"], latest[0]["sha"])
+            newest = max(newest, entry) if newest else entry
+    return (newest[1], newest[0][:10]) if newest else None
+
+
 def xivgear_sims_check(state, fetch_text=http_text):
-    """Every tick: has xivgear committed a sim change since the last look? The first look is the baseline."""
+    """Every tick: has xivgear committed a change to its sims, solver or formulas since the last look? The first look
+    is the baseline."""
     st = state.setdefault(GEAR_SOURCE, {})
-    latest = json.loads(fetch_text(XIVGEAR_SIMS))
+    latest = xivgear_latest(fetch_text)
     if not latest:
         return None
-    sha, date = latest[0]["sha"], latest[0]["commit"]["committer"]["date"][:10]
+    sha, date = latest
     previous = st.get("sims_sha")
     if sha == previous:
         return None
@@ -693,7 +708,14 @@ def xivgear_sims_check(state, fetch_text=http_text):
     jobs = jobs_to_rerun(changed)
     if jobs is None:
         return None
-    what = "sim code shared by every job" if changed is None else f"its {', '.join(sorted(changed))} sim"
+    if changed:
+        what = f"its {', '.join(sorted(changed))} sim"
+    elif any(f.startswith("packages/core/src/solving/") for f in files):
+        what = "its meld solver"
+    elif any(f.startswith("packages/xivmath/src/") for f in files):
+        what = "its stat formulas"
+    else:
+        what = "sim code shared by every job"
     note = f"xivgear changed {what} on {date} (commit {sha[:7]}); re-run it for {jobs}"
     remember_note(st, GEAR_SOURCE, note)
     return note
@@ -709,9 +731,9 @@ def gear_plan_updated(state, api_key, version, fetch=xivapi_json, fetch_text=htt
     if newest:
         st["notes_version"], st["notes_url"] = version, newest[1]
     try:
-        latest = json.loads(fetch_text(XIVGEAR_SIMS))
+        latest = xivgear_latest(fetch_text)
         if latest:
-            st["sims_sha"] = latest[0]["sha"]
+            st["sims_sha"] = latest[0]
     except Exception as ex:
         log(f"xivgear sims baseline: {type(ex).__name__}: {ex}")
     st.pop("note", None)
