@@ -470,44 +470,63 @@ class GearSkill(unittest.TestCase):
         us.tracked_jobs = lambda: []
         self.assertIsNone(us.gear_note("x", known, dict(known, **{"Eighth Umbral Ring": [800, "", "All Classes"]})))
 
-    def test_a_xivgear_sim_change_names_the_job_and_the_first_look_is_the_baseline(self):
-        commits = {"a" * 40: [], "b" * 40: ["packages/sims/src/melee/vpr/vpr_sheet_sim.ts", "packages/sims/src/ranged/dnc_sim.ts"],
-                   "c" * 40: ["packages/sims/src/buffs.ts"]}
-        current = {"sha": "a" * 40}
-
+    @staticmethod
+    def deployed(current, builds):
+        """A fake xivgear.app and GitHub: the version file names the live commit; a compare lists a build's files."""
         def fetch_text(url):
-            if url in us.XIVGEAR_WATCH:
-                return json.dumps([{"sha": current["sha"], "commit": {"committer": {"date": "2026-10-25T03:04:05Z"}}}])
-            sha = url.rsplit("/", 1)[1]
-            return json.dumps({"files": [{"filename": f} for f in commits[sha]]})
+            if url == us.XIVGEAR_DEPLOYED:
+                return current["sha"] + "\nSome commit message (#1)\n"
+            base, head = url.rsplit("/", 1)[1].split("...")
+            if head in builds:
+                return json.dumps({"status": "ahead", "files": [{"filename": f} for f in builds[head]]})
+            return json.dumps({"status": "behind", "files": []})
+        return fetch_text
+
+    def test_a_deployed_xivgear_build_names_the_job_and_the_first_look_is_the_baseline(self):
+        builds = {"b" * 40: ["packages/sims/src/melee/vpr/vpr_sheet_sim.ts", "packages/sims/src/ranged/dnc_sim.ts", "packages/frontend/src/x.ts"],
+                  "c" * 40: ["packages/sims/src/buffs.ts"], "d" * 40: ["packages/sims/src/tank/pld/pld_sheet_sim.ts"],
+                  "e" * 40: ["packages/core/src/solving/gearset_generation.ts"], "f" * 40: ["packages/xivmath/src/geartypes.ts"],
+                  "9" * 40: ["packages/frontend/src/only.ts", "packages/sims/package.json"]}
+        current = {"sha": "a" * 40}
+        fetch_text = self.deployed(current, builds)
         state = {}
-        self.assertIsNone(us.xivgear_sims_check(state, fetch_text))
+        self.assertIsNone(us.xivgear_sims_check(state, fetch_text, "2026-10-27"))
         self.assertEqual("a" * 40, state["Gear plan"]["sims_sha"])
-        self.assertIsNone(us.xivgear_sims_check(state, fetch_text))
+        self.assertIsNone(us.xivgear_sims_check(state, fetch_text, "2026-10-27"))
         current["sha"] = "b" * 40
-        self.assertEqual("xivgear changed its DNC, VPR sim on 2026-10-25 (commit bbbbbbb); re-run it for DNC, VPR", us.xivgear_sims_check(state, fetch_text))
-        self.assertEqual([("Gear plan", "xivgear changed its DNC, VPR sim on 2026-10-25 (commit bbbbbbb); re-run it for DNC, VPR")], self.calls)
+        expected = "xivgear.app deployed a build on 2026-10-27 (commit bbbbbbb) that touched its DNC, VPR sim; re-run it for DNC, VPR"
+        self.assertEqual(expected, us.xivgear_sims_check(state, fetch_text, "2026-10-27"))
+        self.assertEqual([("Gear plan", expected)], self.calls)
         current["sha"] = "c" * 40
-        self.assertTrue(us.xivgear_sims_check(state, fetch_text).startswith("xivgear changed sim code shared by every job"))
+        self.assertIn("that touched sim code shared by every job; re-run it for DNC, VPR", us.xivgear_sims_check(state, fetch_text, "2026-10-27"))
         self.assertIsNone(us.sim_jobs(["packages/sims/package.json"]))
         self.assertEqual({"BLU", "PLD"}, us.sim_jobs(["packages/sims/src/tank/pld/pld_sheet_sim.ts", "packages/sims/src/blu/blu_winged120.ts"]))
-        commits["d" * 40] = ["packages/sims/src/tank/pld/pld_sheet_sim.ts"]
         current["sha"] = "d" * 40
-        self.assertIsNone(us.xivgear_sims_check(state, fetch_text))   # a job without a sheet: the baseline moves, no note
+        self.assertIsNone(us.xivgear_sims_check(state, fetch_text, "2026-10-27"))   # a job without a sheet: the baseline moves, no note
         self.assertEqual("d" * 40, state["Gear plan"]["sims_sha"])
-        commits["e" * 40] = ["packages/core/src/solving/gearset_generation.ts"]
         current["sha"] = "e" * 40
-        self.assertEqual("xivgear changed its meld solver on 2026-10-25 (commit eeeeeee); re-run it for DNC, VPR", us.xivgear_sims_check(state, fetch_text))
-        commits["f" * 40] = ["packages/xivmath/src/xivmath.ts"]
+        self.assertIn("that touched its meld-solver code", us.xivgear_sims_check(state, fetch_text, "2026-10-27"))
         current["sha"] = "f" * 40
-        self.assertTrue(us.xivgear_sims_check(state, fetch_text).startswith("xivgear changed its stat formulas"))
+        self.assertIn("that touched its stat-formula code", us.xivgear_sims_check(state, fetch_text, "2026-10-27"))
+        current["sha"] = "9" * 40
+        self.assertIsNone(us.xivgear_sims_check(state, fetch_text, "2026-10-27"))   # a build that left the sims alone
+        self.assertEqual("9" * 40, state["Gear plan"]["sims_sha"])
 
-    def test_an_updated_plan_takes_the_current_sim_commit_as_the_baseline(self):
+    def test_a_rollback_counts_what_it_undid_and_a_broken_version_file_changes_nothing(self):
+        builds = {"b" * 40: ["packages/sims/src/melee/vpr/vpr_sheet_sim.ts"]}
+        state = {"Gear plan": {"sims_sha": "b" * 40}}
+        note = us.xivgear_sims_check(state, self.deployed({"sha": "a" * 40}, builds), "2026-10-27")
+        self.assertEqual("xivgear.app deployed a build on 2026-10-27 (commit aaaaaaa) that touched its VPR sim; re-run it for VPR", note)
+        self.assertEqual("a" * 40, state["Gear plan"]["sims_sha"])
+        self.assertIsNone(us.xivgear_sims_check(state, lambda url: "<html>503</html>", "2026-10-27"))
+        self.assertEqual("a" * 40, state["Gear plan"]["sims_sha"])
+
+    def test_an_updated_plan_takes_the_deployed_commit_as_the_baseline(self):
         state = {"Gear plan": {"sims_sha": "a" * 40, "note": "old"}}
 
         def fetch_text(url):
-            if url in us.XIVGEAR_WATCH:
-                return json.dumps([{"sha": "b" * 40, "commit": {"committer": {"date": "2026-10-25T03:04:05Z"}}}])
+            if url == us.XIVGEAR_DEPLOYED:
+                return "b" * 40 + "\nSome commit message (#1)\n"
             return "<html></html>"
         us.gear_plan_updated(state, "key", "2026.10.16.0000.0000", lambda url: {"results": []}, fetch_text)
         self.assertEqual("b" * 40, state["Gear plan"]["sims_sha"])

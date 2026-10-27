@@ -55,11 +55,12 @@ ITEM_FOOD = "https://v2.xivapi.com/api/sheet/ItemFood/{}?fields=BaseParam[].Name
 MATERIA_SHEET = "https://v2.xivapi.com/api/sheet/Materia?limit=100&fields=BaseParam.Name,Item[].Name,Value"
 # the plan's consumables too: a new food or potion tier, or a new materia grade, moves the best melds
 GEAR_KINDS = {"gear": "", "food": "+ItemUICategory=46 ", "potions": "+ItemUICategory=44 ", "materia": "+ItemUICategory=58 "}
-# xivgear's job sims decide the gear skill's rankings, so a change to them is as good as a patch
+# xivgear's job sims decide the gear skill's rankings, so a change to them is as good as a patch; what counts is the
+# build xivgear.app runs (it publishes that commit), not GitHub's main, which runs ahead of the site for days
+XIVGEAR_DEPLOYED = "https://xivgear.app/version_info.txt"
+XIVGEAR_COMPARE = "https://api.github.com/repos/xiv-gear-planner/gear-planner/compare/{}...{}"
 # everything that can move a solved set's score: the job sims, the meld solver and the stat formulas
-XIVGEAR_WATCH = [f"https://api.github.com/repos/xiv-gear-planner/gear-planner/commits?path={p}&per_page=1"
-                 for p in ("packages/sims/src", "packages/core/src/solving", "packages/xivmath/src")]
-XIVGEAR_COMMIT = "https://api.github.com/repos/xiv-gear-planner/gear-planner/commits/{}"
+XIVGEAR_PATHS = ("packages/sims/src/", "packages/core/src/solving/", "packages/xivmath/src/")
 LODESTONE = "https://na.finalfantasyxiv.com"
 LODESTONE_LOG = LODESTONE + "/lodestone/special/patchnote_log/"
 GEAR_TERMS = ("bygone brass", "thundersteep", "universal tomestone", "mnemonics", "treno rain", "courtly lover",
@@ -666,44 +667,52 @@ def gear_notes_check(state, version, fetch_text=http_text):
 
 
 def sim_jobs(files):
-    """The jobs whose sims a xivgear commit touched; None when anything shared moved (sim code for every job, the meld
+    """The jobs whose sims a xivgear build touched; None when anything shared moved (sim code for every job, the meld
     solver or the stat formulas), which counts for every job."""
     jobs, shared = set(), False
     for path in files:
         m = re.match(r"packages/sims/src/(?:tank|healer|melee|ranged|caster|blu)/([a-z]{3})", path)
         if m:
             jobs.add(m.group(1).upper())
-        elif path.startswith(("packages/sims/src/", "packages/core/src/solving/", "packages/xivmath/src/")):
+        elif path.startswith(XIVGEAR_PATHS):
             shared = True
     return None if shared or not jobs else jobs
 
 
-def xivgear_latest(fetch_text=http_text):
-    """(sha, date) of the newest commit touching any watched xivgear folder, or None."""
-    newest = None
-    for url in XIVGEAR_WATCH:
-        latest = json.loads(fetch_text(url))
-        if latest:
-            entry = (latest[0]["commit"]["committer"]["date"], latest[0]["sha"])
-            newest = max(newest, entry) if newest else entry
-    return (newest[1], newest[0][:10]) if newest else None
+def xivgear_deployed(fetch_text=http_text):
+    """The commit xivgear.app runs (the first line of its version file), or None."""
+    first = fetch_text(XIVGEAR_DEPLOYED).strip().split("\n", 1)[0].strip()
+    return first if re.fullmatch(r"[0-9a-f]{40}", first) else None
 
 
-def xivgear_sims_check(state, fetch_text=http_text):
-    """Every tick: has xivgear committed a change to its sims, solver or formulas since the last look? The first look
-    is the baseline."""
+def xivgear_build_files(previous, sha, fetch_text=http_text):
+    """The files the deployed build changed since the previous one. A rollback or a build off another branch also
+    counts what it undid, and a range too long for one answer (GitHub lists 300 files at most) counts as touching
+    everything watched."""
+    compare = json.loads(fetch_text(XIVGEAR_COMPARE.format(previous, sha)))
+    files = [f["filename"] for f in compare.get("files", [])]
+    if compare.get("status") in ("behind", "diverged"):
+        undone = json.loads(fetch_text(XIVGEAR_COMPARE.format(sha, previous)))
+        files += [f["filename"] for f in undone.get("files", [])]
+    return files if len(files) < 300 else list(XIVGEAR_PATHS)
+
+
+def xivgear_sims_check(state, fetch_text=http_text, today=None):
+    """Every tick: does xivgear.app run a different build than at the last look, and did that build touch its sims,
+    solver or formulas? The first look is the baseline."""
     st = state.setdefault(GEAR_SOURCE, {})
-    latest = xivgear_latest(fetch_text)
-    if not latest:
+    sha = xivgear_deployed(fetch_text)
+    if not sha:
         return None
-    sha, date = latest
     previous = st.get("sims_sha")
     if sha == previous:
         return None
     st["sims_sha"] = sha
     if previous is None:
         return None
-    files = [f["filename"] for f in json.loads(fetch_text(XIVGEAR_COMMIT.format(sha))).get("files", [])]
+    files = [f for f in xivgear_build_files(previous, sha, fetch_text) if f.startswith(XIVGEAR_PATHS)]
+    if not files:
+        return None
     changed = sim_jobs(files)
     jobs = jobs_to_rerun(changed)
     if jobs is None:
@@ -711,12 +720,13 @@ def xivgear_sims_check(state, fetch_text=http_text):
     if changed:
         what = f"its {', '.join(sorted(changed))} sim"
     elif any(f.startswith("packages/core/src/solving/") for f in files):
-        what = "its meld solver"
+        what = "its meld-solver code"
     elif any(f.startswith("packages/xivmath/src/") for f in files):
-        what = "its stat formulas"
+        what = "its stat-formula code"
     else:
         what = "sim code shared by every job"
-    note = f"xivgear changed {what} on {date} (commit {sha[:7]}); re-run it for {jobs}"
+    date = today or datetime.date.today().isoformat()
+    note = f"xivgear.app deployed a build on {date} (commit {sha[:7]}) that touched {what}; re-run it for {jobs}"
     remember_note(st, GEAR_SOURCE, note)
     return note
 
@@ -731,9 +741,9 @@ def gear_plan_updated(state, api_key, version, fetch=xivapi_json, fetch_text=htt
     if newest:
         st["notes_version"], st["notes_url"] = version, newest[1]
     try:
-        latest = xivgear_latest(fetch_text)
-        if latest:
-            st["sims_sha"] = latest[0]
+        sha = xivgear_deployed(fetch_text)
+        if sha:
+            st["sims_sha"] = sha
     except Exception as ex:
         log(f"xivgear sims baseline: {type(ex).__name__}: {ex}")
     st.pop("note", None)
