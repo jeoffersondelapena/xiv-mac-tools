@@ -369,14 +369,14 @@ class NetLogTailing(unittest.TestCase):
         with open(self.path, "w") as f:
             f.write("00|old|0029||x|h\n" * 400)
         tail = pw.NetLogTail(self.dir)
-        self.assertEqual(tail.read_new(), [])
+        self.assertEqual(tail.read_new(), {})
         with open(self.path, "a") as f:
             f.write("21|t|a|b\n00|t|002B||y|h\npartial")
-        self.assertEqual(tail.read_new(), ["21|t|a|b", "00|t|002B||y|h"])
-        self.assertEqual(tail.read_new(), [])
+        self.assertEqual(tail.read_new(), {self.path: ["21|t|a|b", "00|t|002B||y|h"]})
+        self.assertEqual(tail.read_new(), {})
         with open(self.path, "a") as f:
             f.write(" line\n")
-        self.assertEqual(tail.read_new(), ["partial line"])
+        self.assertEqual(tail.read_new(), {self.path: ["partial line"]})
 
     def test_stall_watch_fires_once_and_notes_recovery(self):
         with open(self.path, "w") as f:
@@ -392,7 +392,7 @@ class NetLogTailing(unittest.TestCase):
         with open(self.path, "a") as f:
             f.write("21|t|a|b\n")
         watch.tick(1008.0, games=[])
-        self.assertFalse(watch.stalled)
+        self.assertFalse(watch.stalled[self.path])
 
     def test_the_note_waits_for_parser_lines_even_after_combat_chat_went_quiet(self):
         with open(self.path, "w") as f:
@@ -405,18 +405,63 @@ class NetLogTailing(unittest.TestCase):
             with open(self.path, "a") as f:
                 f.write("00|t|0029||hit|h\n" * 10)
             watch.tick(1000.0, games=[])
-            self.assertTrue(watch.noted)
+            self.assertEqual(watch.noted, {self.path})
             # A minute of silence empties the window: the verdict drops, the note must not.
             watch.tick(1100.0, games=[])
-            self.assertFalse(watch.stalled)
+            self.assertFalse(watch.stalled[self.path])
             self.assertEqual(cleared, [])
             with open(self.path, "a") as f:
                 f.write("21|t|a|b\n")
             watch.tick(1104.0, games=[])
             self.assertEqual(cleared, [("IINACT", None)])
-            self.assertFalse(watch.noted)
+            self.assertEqual(watch.noted, set())
         finally:
             pw.set_attention = self._attention
+
+    def stub_attention(self):
+        cleared = []
+        self._attention, pw.set_attention = pw.set_attention, lambda source, note: cleared.append((source, note))
+        self.addCleanup(lambda: setattr(pw, "set_attention", self._attention))
+        return cleared
+
+    def test_each_window_log_is_judged_on_its_own(self):
+        other = os.path.join(self.dir, "Network_30304_20261030_652.log")
+        watch = pw.StallWatch(self.dir)
+        fired = []
+        watch.on_stall = lambda now, games, chat: fired.append(chat)
+        cleared = self.stub_attention()
+        with open(self.path, "w") as f:
+            f.write("00|t|0029||hit|h\n" * 10)
+        with open(other, "w") as f:
+            f.write("21|t|a|b\n" * 3)
+        watch.tick(1000.0, games=[])
+        self.assertEqual(fired, [10])
+        self.assertEqual(watch.noted, {self.path})
+        # The healthy window's parser lines say nothing about the stalled one.
+        with open(other, "a") as f:
+            f.write("21|t|a|b\n")
+        watch.tick(1004.0, games=[])
+        self.assertEqual(cleared, [])
+        with open(self.path, "a") as f:
+            f.write("21|t|a|b\n")
+        watch.tick(1008.0, games=[])
+        self.assertEqual(cleared, [("IINACT", None)])
+        self.assertEqual(len(fired), 1)
+
+    def test_a_stalled_window_that_closes_takes_its_note_along(self):
+        watch = pw.StallWatch(self.dir)
+        watch.on_stall = lambda now, games, chat: None
+        cleared = self.stub_attention()
+        with open(self.path, "w") as f:
+            f.write("00|t|0029||hit|h\n" * 10)
+        watch.tick(1000.0, games=[])
+        self.assertEqual(watch.noted, {self.path})
+        watch.tick(1000.0 + pw.NETLOG_QUIET, games=[])
+        self.assertEqual(cleared, [])
+        watch.tick(1001.0 + pw.NETLOG_QUIET, games=[])
+        self.assertEqual(cleared, [("IINACT", None)])
+        self.assertEqual(watch.noted, set())
+        self.assertNotIn(self.path, watch.recent)
 
 
 class WinePaths(unittest.TestCase):
@@ -520,13 +565,13 @@ class NetlogRelocation(unittest.TestCase):
 
     def test_a_refused_listing_is_told_apart_from_an_empty_folder(self):
         tail = pw.NetLogTail(self.docs)
-        self.assertIsNone(tail.newest())
+        self.assertEqual(tail.files(), [])
         self.assertFalse(tail.denied)
         os.chmod(self.docs, 0)
-        self.assertIsNone(tail.newest())
+        self.assertEqual(tail.files(), [])
         self.assertTrue(tail.denied)
         os.chmod(self.docs, 0o700)
-        tail.newest()
+        tail.files()
         self.assertFalse(tail.denied)
 
     def test_the_watch_warns_once_then_moves_the_log_when_the_game_is_gone(self):

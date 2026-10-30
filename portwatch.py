@@ -228,6 +228,7 @@ PARSER_TYPES = {"21", "22", "261"}
 STALL_WINDOW = 60
 STALL_MIN_CHAT = 8
 STALL_SAMPLE_COOLDOWN = 600
+NETLOG_QUIET = 600         # a log nothing wrote for this long belongs to a window that closed
 
 NETLOG_LINE_RE = re.compile(r"^(\d{2,3})\|[^|]*\|([0-9A-Fa-f]{4})?")
 
@@ -315,95 +316,118 @@ def relocate_netlog(config_path, new_dir, games, prefix=WINEPREFIX, say=None):
 
 
 class NetLogTail:
-    """Yields new lines of the newest IINACT network log, starting from its current end."""
+    """Yields the new lines of every IINACT network log in the folder (one per game window since
+    IINACT aaca667), each read from where the last read ended."""
 
     def __init__(self, directory):
         self.directory = directory
-        self.path = None
-        self.offset = 0
+        self.offsets = {}     # path -> bytes consumed
         self.denied = False   # the last listing was refused, as opposed to finding nothing
 
-    def newest(self):
+    def files(self):
         try:
             names = os.listdir(self.directory) if self.directory else []
         except PermissionError:
             self.denied = True
-            return None
+            return []
         except OSError:
             names = []
         self.denied = False
-        files = [os.path.join(self.directory, n) for n in names
-                 if n.startswith("Network_") and n.endswith(".log")]
-        return max(files, key=os.path.getmtime) if files else None
+        return [os.path.join(self.directory, n) for n in names if n.startswith("Network_") and n.endswith(".log")]
 
     def read_new(self):
-        path = self.newest()
-        if path is None:
-            return []
-        if path != self.path:
-            # A file seen for the first time is read from its end, so history is never replayed;
-            # a file that has just been created (a new day) is small and read whole.
-            self.path = path
-            self.offset = 0 if os.path.getsize(path) < 4096 else os.path.getsize(path)
-        try:
-            with open(path, "rb") as f:
-                f.seek(self.offset)
-                data = f.read()
-        except OSError:
-            return []
-        if not data:
-            return []
-        cut = data.rfind(b"\n")
-        if cut < 0:
-            return []
-        self.offset += cut + 1
-        return data[:cut].decode("utf-8", "replace").splitlines()
+        """{path: complete new lines} for the files that grew since the last call."""
+        found = {}
+        for path in self.files():
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            if path not in self.offsets:
+                # A file seen for the first time is read from its end, so history is never replayed;
+                # a file that has just been created (a new window, a new day) is small and read whole.
+                self.offsets[path] = 0 if size < 4096 else size
+            if size <= self.offsets[path]:
+                continue
+            try:
+                with open(path, "rb") as f:
+                    f.seek(self.offsets[path])
+                    data = f.read()
+            except OSError:
+                continue
+            cut = data.rfind(b"\n")
+            if cut < 0:
+                continue
+            self.offsets[path] += cut + 1
+            found[path] = data[:cut].decode("utf-8", "replace").splitlines()
+        for path in [p for p in self.offsets if not os.path.exists(p)]:
+            del self.offsets[path]
+        return found
 
 
 class StallWatch:
-    """Keeps a one-minute window of network-log line kinds and samples the game once per stall."""
+    """Keeps a one-minute window of network-log line kinds per log file, so each game window is
+    judged on its own, and samples the game once per stall."""
 
     def __init__(self, directory=None, config_path=IINACT_CONFIG, new_home=NETLOG_HOME, home=HOME):
         self.config_path = config_path
         self.new_home = new_home
         self.home = home
         self.tail = NetLogTail(directory or netlog_dir(config_path))
-        self.recent = []          # (arrival time, kind, chat code)
-        self.stalled = False
-        self.noted = False        # the IINACT note stands until parser lines are seen again
+        self.recent = {}          # path -> [(arrival time, kind, chat code)]
+        self.last_line = {}       # path -> arrival time of its newest line
+        self.stalled = {}         # path -> the last tick's verdict
+        self.noted = set()        # paths whose stall raised the IINACT note
         self.last_sample = 0
         self.denied_noted = False
 
-    def counts(self, now):
-        self.recent = [r for r in self.recent if now - r[0] <= STALL_WINDOW]
-        chat = sum(1 for _, k, c in self.recent if k == "00" and c in COMBAT_CHAT)
-        parser = sum(1 for _, k, _ in self.recent if k in PARSER_TYPES)
+    def counts(self, now, path):
+        recent = self.recent[path] = [r for r in self.recent.get(path, []) if now - r[0] <= STALL_WINDOW]
+        chat = sum(1 for _, k, c in recent if k == "00" and c in COMBAT_CHAT)
+        parser = sum(1 for _, k, _ in recent if k in PARSER_TYPES)
         return chat, parser
 
     def tick(self, now, games):
-        lines = self.tail.read_new()
+        new = self.tail.read_new()
         if self.tail.denied:
             self.on_denied(games)
         elif self.denied_noted:
             log("IINACT network log readable again")
             self.denied_noted = False
-        for line in lines:
-            kind = classify_netlog_line(line)
-            if kind:
-                self.recent.append((now, kind[0], kind[1]))
-        chat, parser = self.counts(now)
-        stalled = stall_verdict(chat, parser)
-        if stalled and not self.stalled:
-            self.on_stall(now, games, chat)
-            self.noted = True
-        elif self.noted and parser > 0:
-            # Keyed on the note, not on the verdict: when combat chat went quiet before the parser
-            # came back (a restart mid-duty, 2026-10-30), the verdict had already dropped and the
-            # note was never cleared.
-            log("IINACT parser lines resumed")
+        for path, lines in new.items():
+            for line in lines:
+                kind = classify_netlog_line(line)
+                if kind:
+                    self.recent.setdefault(path, []).append((now, kind[0], kind[1]))
+            self.last_line[path] = now
+        for path in list(self.recent):
+            if now - self.last_line.get(path, now) > NETLOG_QUIET:
+                self.forget(path)
+                continue
+            chat, parser = self.counts(now, path)
+            stalled = stall_verdict(chat, parser)
+            if stalled and not self.stalled.get(path):
+                self.on_stall(now, games, chat)
+                self.noted.add(path)
+            elif path in self.noted and parser > 0:
+                # Keyed on the note, not on the verdict: when combat chat went quiet before the parser
+                # came back (a restart mid-duty, 2026-10-30), the verdict had already dropped and the
+                # note was never cleared.
+                self.resolved(path, "parser lines resumed")
+            self.stalled[path] = stalled
+
+    def forget(self, path):
+        """A stall ends with its window: nothing is left to act on, so the note goes with it."""
+        if path in self.noted:
+            self.resolved(path, "the stalled window closed")
+        for table in (self.recent, self.last_line, self.stalled):
+            table.pop(path, None)
+
+    def resolved(self, path, why):
+        self.noted.discard(path)
+        if not self.noted:
+            log(f"IINACT {why}")
             set_attention("IINACT", None)
-            self.noted = False
-        self.stalled = stalled
 
     def on_denied(self, games):
         """No consent prompt ever reaches a launchd agent, so the cures are moving the log out of the
