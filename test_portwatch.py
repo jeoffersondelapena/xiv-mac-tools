@@ -394,6 +394,30 @@ class NetLogTailing(unittest.TestCase):
         watch.tick(1008.0, games=[])
         self.assertFalse(watch.stalled)
 
+    def test_the_note_waits_for_parser_lines_even_after_combat_chat_went_quiet(self):
+        with open(self.path, "w") as f:
+            f.write("")
+        watch = pw.StallWatch(self.dir)
+        watch.on_stall = lambda now, games, chat: None
+        cleared = []
+        self._attention, pw.set_attention = pw.set_attention, lambda source, note: cleared.append((source, note))
+        try:
+            with open(self.path, "a") as f:
+                f.write("00|t|0029||hit|h\n" * 10)
+            watch.tick(1000.0, games=[])
+            self.assertTrue(watch.noted)
+            # A minute of silence empties the window: the verdict drops, the note must not.
+            watch.tick(1100.0, games=[])
+            self.assertFalse(watch.stalled)
+            self.assertEqual(cleared, [])
+            with open(self.path, "a") as f:
+                f.write("21|t|a|b\n")
+            watch.tick(1104.0, games=[])
+            self.assertEqual(cleared, [("IINACT", None)])
+            self.assertFalse(watch.noted)
+        finally:
+            pw.set_attention = self._attention
+
 
 class WinePaths(unittest.TestCase):
     def setUp(self):

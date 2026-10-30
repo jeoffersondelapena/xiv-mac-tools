@@ -370,6 +370,7 @@ class StallWatch:
         self.tail = NetLogTail(directory or netlog_dir(config_path))
         self.recent = []          # (arrival time, kind, chat code)
         self.stalled = False
+        self.noted = False        # the IINACT note stands until parser lines are seen again
         self.last_sample = 0
         self.denied_noted = False
 
@@ -394,9 +395,14 @@ class StallWatch:
         stalled = stall_verdict(chat, parser)
         if stalled and not self.stalled:
             self.on_stall(now, games, chat)
-        elif self.stalled and parser > 0:
+            self.noted = True
+        elif self.noted and parser > 0:
+            # Keyed on the note, not on the verdict: when combat chat went quiet before the parser
+            # came back (a restart mid-duty, 2026-10-30), the verdict had already dropped and the
+            # note was never cleared.
             log("IINACT parser lines resumed")
             set_attention("IINACT", None)
+            self.noted = False
         self.stalled = stalled
 
     def on_denied(self, games):
