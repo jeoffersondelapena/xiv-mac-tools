@@ -223,8 +223,12 @@ DEFAULT_NETLOG_WIN = "C:\\users\\" + os.path.basename(HOME) + "\\Documents\\IINA
 NETLOG_HOME = os.path.join(BASE, "iinact-logs")
 GATED_FOLDERS = ("Desktop", "Documents", "Downloads")
 STALL_LOG = os.path.join(BASE, "wedge-watch", "iinact-stalls.log")
-COMBAT_CHAT = set(range(0x29, 0x34))   # damage, actions, healing, effects gained and lost
-PARSER_TYPES = {"21", "22", "261"}
+# Chat that only an action produces: damage, misses, actions, items, healing. Effects gained and lost (0x2E-0x31)
+# tick from passive buffs in an idle window, which raised a false stall every half minute on 2026-11-01.
+COMBAT_CHAT = {0x29, 0x2A, 0x2B, 0x2C, 0x2D}
+# Lines the parser writes only from packets. 260/261 come from its memory scan and 01-04/11/12/40 from client
+# state, and all of those kept flowing through the real stall of 2026-10-30 (network line 95 s old).
+PARSER_TYPES = {str(t) for t in range(20, 40)} | {"41", "42"} | {str(t) for t in range(257, 275) if t not in (260, 261)}
 STALL_WINDOW = 60
 STALL_MIN_CHAT = 8
 STALL_SAMPLE_COOLDOWN = 600
@@ -376,7 +380,7 @@ class StallWatch:
         self.tail = NetLogTail(directory or netlog_dir(config_path))
         self.recent = {}          # path -> [(arrival time, kind, chat code)]
         self.last_line = {}       # path -> arrival time of its newest line
-        self.stalled = {}         # path -> the last tick's verdict
+        self.stalled = {}         # path -> a stall is open, held until the parser writes again
         self.noted = set()        # paths whose stall raised the IINACT note
         self.last_sample = 0
         self.denied_noted = False
@@ -405,16 +409,17 @@ class StallWatch:
                 self.forget(path)
                 continue
             chat, parser = self.counts(now, path)
-            stalled = stall_verdict(chat, parser)
-            if stalled and not self.stalled.get(path):
-                self.on_stall(now, games, chat)
+            # Only parser lines end a stall: combat chat going quiet first (a restart mid-duty, 2026-10-30)
+            # must not drop the note, and chat dipping under the threshold and back (2026-11-01) must not
+            # raise it again.
+            if parser > 0:
+                if path in self.noted:
+                    self.resolved(path, "parser lines resumed")
+                self.stalled[path] = False
+            elif stall_verdict(chat, parser) and not self.stalled.get(path):
+                self.on_stall(now, games, chat, path)
                 self.noted.add(path)
-            elif path in self.noted and parser > 0:
-                # Keyed on the note, not on the verdict: when combat chat went quiet before the parser
-                # came back (a restart mid-duty, 2026-10-30), the verdict had already dropped and the
-                # note was never cleared.
-                self.resolved(path, "parser lines resumed")
-            self.stalled[path] = stalled
+                self.stalled[path] = True
 
     def forget(self, path):
         """A stall ends with its window: nothing is left to act on, so the note goes with it."""
@@ -444,8 +449,8 @@ class StallWatch:
             self.tail = NetLogTail(self.new_home)
             self.denied_noted = False
 
-    def on_stall(self, now, games, chat):
-        msg = f"IINACT STALL: {chat} combat chat lines in {STALL_WINDOW}s but no parser lines"
+    def on_stall(self, now, games, chat, path=None):
+        msg = f"IINACT STALL: {chat} combat chat lines in {STALL_WINDOW}s but no parser lines" + (f" ({os.path.basename(path)})" if path else "")
         log(msg)
         files = []
         if games and now - self.last_sample > STALL_SAMPLE_COOLDOWN:
@@ -588,7 +593,10 @@ class HangWatch:
         else:
             log("no thread sample: the machine is short of memory, and sampling would hold the game still for longer")
         notify("Game window frozen", f"pid {pid}: no plugin heartbeat for {age:.0f}s; {memory}. Force Quit it; leftovers are cleared for you.")
-        set_attention("GameWindow", event_note(f"a game window froze (no plugin heartbeat for {age:.0f} s; {memory})", out))
+        if memory_explains_freeze(level):
+            log("no attention note: memory pressure explains this freeze")
+        else:
+            set_attention("GameWindow", event_note(f"a game window froze (no plugin heartbeat for {age:.0f} s; {memory})", out))
 
 
 # A machine out of memory holds a game still for minutes and looks the same from outside as a hang. On 2026-09-30
@@ -619,6 +627,12 @@ def memory_facts():
 
 def sample_worthwhile(level):
     return level not in (2, 4)
+
+
+def memory_explains_freeze(level):
+    """Under memory pressure a freeze is the known pattern (a boot or zone load with swap full, 2026-10-30 and
+    2026-10-31): logged and notified, but not worth an in-game note, which only ever asked for the same analysis."""
+    return level in (2, 4)
 
 
 # A game that began to close and never finished. XIV Doctor's last line says the game itself is closing (a plugin

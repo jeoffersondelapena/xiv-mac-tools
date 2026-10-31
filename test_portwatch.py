@@ -383,7 +383,7 @@ class NetLogTailing(unittest.TestCase):
             f.write("")
         watch = pw.StallWatch(self.dir)
         fired = []
-        watch.on_stall = lambda now, games, chat: fired.append((now, chat))
+        watch.on_stall = lambda now, games, chat, path=None: fired.append((now, chat))
         with open(self.path, "a") as f:
             f.write("00|t|0029||hit|h\n" * 10)
         watch.tick(1000.0, games=[])
@@ -394,11 +394,58 @@ class NetLogTailing(unittest.TestCase):
         watch.tick(1008.0, games=[])
         self.assertFalse(watch.stalled[self.path])
 
+    def test_an_idle_windows_buff_ticks_are_not_combat(self):
+        # 2026-11-01: a window parked in Cosmic Exploration wrote only effect-gained/lost chat and HP updates
+        with open(self.path, "w") as f:
+            f.write("")
+        watch = pw.StallWatch(self.dir)
+        fired = []
+        watch.on_stall = lambda now, games, chat, path=None: fired.append(chat)
+        with open(self.path, "a") as f:
+            f.write(("00|t|002E||gain|h\n00|t|0030||lose|h\n") * 6)
+        watch.tick(1000.0, games=[])
+        self.assertEqual(fired, [])
+        self.assertFalse(watch.stalled.get(self.path))
+
+    def test_any_packet_line_proves_the_parser_alive(self):
+        with open(self.path, "w") as f:
+            f.write("")
+        watch = pw.StallWatch(self.dir)
+        fired = []
+        watch.on_stall = lambda now, games, chat, path=None: fired.append(chat)
+        with open(self.path, "a") as f:
+            f.write("00|t|0029||hit|h\n" * 10 + "39|t|10001234|Name|100|100\n")
+        watch.tick(1000.0, games=[])
+        self.assertEqual(fired, [])
+        with open(self.path, "a") as f:
+            f.write("00|t|0029||hit|h\n" * 10 + "261|t|Change|...\n")   # memory-scan lines do not count
+        watch.tick(1070.0, games=[])
+        self.assertEqual(fired, [10])
+
+    def test_the_note_is_not_raised_again_while_the_parser_stays_silent(self):
+        with open(self.path, "w") as f:
+            f.write("")
+        watch = pw.StallWatch(self.dir)
+        fired = []
+        watch.on_stall = lambda now, games, chat, path=None: fired.append(now)
+        with open(self.path, "a") as f:
+            f.write("00|t|0029||hit|h\n" * 10)
+        watch.tick(1000.0, games=[])
+        watch.tick(1070.0, games=[])   # the chat has left the window: under the threshold, parser still silent
+        with open(self.path, "a") as f:
+            f.write("00|t|0029||hit|h\n" * 10)
+        watch.tick(1075.0, games=[])
+        self.assertEqual(fired, [1000.0])
+        with open(self.path, "a") as f:
+            f.write("21|t|a|b\n")
+        watch.tick(1080.0, games=[])
+        self.assertFalse(watch.stalled[self.path])
+
     def test_the_note_waits_for_parser_lines_even_after_combat_chat_went_quiet(self):
         with open(self.path, "w") as f:
             f.write("")
         watch = pw.StallWatch(self.dir)
-        watch.on_stall = lambda now, games, chat: None
+        watch.on_stall = lambda now, games, chat, path=None: None
         cleared = []
         self._attention, pw.set_attention = pw.set_attention, lambda source, note: cleared.append((source, note))
         try:
@@ -406,9 +453,9 @@ class NetLogTailing(unittest.TestCase):
                 f.write("00|t|0029||hit|h\n" * 10)
             watch.tick(1000.0, games=[])
             self.assertEqual(watch.noted, {self.path})
-            # A minute of silence empties the window: the verdict drops, the note must not.
+            # A minute of silence empties the window: the stall stays open and the note must not drop.
             watch.tick(1100.0, games=[])
-            self.assertFalse(watch.stalled[self.path])
+            self.assertTrue(watch.stalled[self.path])
             self.assertEqual(cleared, [])
             with open(self.path, "a") as f:
                 f.write("21|t|a|b\n")
@@ -428,7 +475,7 @@ class NetLogTailing(unittest.TestCase):
         other = os.path.join(self.dir, "Network_30304_20261030_652.log")
         watch = pw.StallWatch(self.dir)
         fired = []
-        watch.on_stall = lambda now, games, chat: fired.append(chat)
+        watch.on_stall = lambda now, games, chat, path=None: fired.append(chat)
         cleared = self.stub_attention()
         with open(self.path, "w") as f:
             f.write("00|t|0029||hit|h\n" * 10)
@@ -450,7 +497,7 @@ class NetLogTailing(unittest.TestCase):
 
     def test_a_stalled_window_that_closes_takes_its_note_along(self):
         watch = pw.StallWatch(self.dir)
-        watch.on_stall = lambda now, games, chat: None
+        watch.on_stall = lambda now, games, chat, path=None: None
         cleared = self.stub_attention()
         with open(self.path, "w") as f:
             f.write("00|t|0029||hit|h\n" * 10)
@@ -588,6 +635,14 @@ class NetlogRelocation(unittest.TestCase):
         self.assertTrue(any("moved to" in s for s in self.said))
         watch.tick(1012.0, [])
         self.assertEqual(1, sum("unreadable" in s for s in self.said))
+
+
+class FreezeNotes(unittest.TestCase):
+    def test_memory_pressure_keeps_a_freeze_out_of_the_in_game_notes(self):
+        self.assertTrue(pw.memory_explains_freeze(2))
+        self.assertTrue(pw.memory_explains_freeze(4))
+        self.assertFalse(pw.memory_explains_freeze(1))
+        self.assertFalse(pw.memory_explains_freeze(None))
 
 
 class HangDetection(unittest.TestCase):

@@ -138,12 +138,14 @@ def watch():
             age = (datetime.datetime.now() - r["start"]).total_seconds(); games = game_starts(); pid = boot_pid(r["start"], games)
             stalled = pid and ((not r["first_frame"] and age > FIRST_FRAME_LIMIT) or (r["first_frame"] and not r["plugins_done"] and age > PLUGIN_LIMIT))
             if stalled and key not in sampled:
-                sampled.add(key); out = None
-                if not short_of_memory():   # sampling a game that is only being paged holds it still for minutes
+                sampled.add(key); out = None; short = short_of_memory()
+                # Short of memory, sampling a game that is only being paged holds it still for minutes, and the
+                # wedge is the known pattern (swap full at boot), so it gets a report but no in-game note.
+                if not short:
                     out = os.path.join(HERE, f"wedge-sample-{r['start'].strftime('%H%M%S')}.txt")
                     subprocess.run(["sample", pid, "8", "-file", out], capture_output=True)
-                set_attention("Boot", event_note("a boot wedged on a black screen", out)); noted = True
-                open(os.path.join(HERE, f"boot-{r['start'].strftime('%H%M%S')}.txt"), "a").write(report(seg, live=True) + f"\n  STALL detected at +{int(age)}s; thread sample: {out or 'none, short of memory'}\n")
+                    set_attention("Boot", event_note("a boot wedged on a black screen", out)); noted = True
+                open(os.path.join(HERE, f"boot-{r['start'].strftime('%H%M%S')}.txt"), "a").write(report(seg, live=True) + f"\n  STALL detected at +{int(age)}s; thread sample: {out or 'none, short of memory'}{'; no in-game note: memory pressure explains the wedge' if short else ''}\n")
             if noted and key not in sampled and r["first_frame"] and r["plugins_done"]:
                 set_attention("Boot", None); noted = False
             # a boot whose own process is gone gets its report even when it never finished loading
