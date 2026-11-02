@@ -228,7 +228,8 @@ STALL_LOG = os.path.join(BASE, "wedge-watch", "iinact-stalls.log")
 COMBAT_CHAT = {0x29, 0x2A, 0x2B, 0x2C, 0x2D}
 # Lines the parser writes only from packets. 260/261 come from its memory scan and 01-04/11/12/40 from client
 # state, and all of those kept flowing through the real stall of 2026-10-30 (network line 95 s old).
-PARSER_TYPES = {str(t) for t in range(20, 40)} | {"41", "42"} | {str(t) for t in range(257, 275) if t not in (260, 261)}
+# 265 (content finder settings) also came out of a dead pipeline on a zone change (2026-11-02), so it is left out too.
+PARSER_TYPES = {str(t) for t in range(20, 40)} | {"41", "42"} | {str(t) for t in range(257, 275) if t not in (260, 261, 265)}
 STALL_WINDOW = 60
 STALL_MIN_CHAT = 8
 STALL_SAMPLE_COOLDOWN = 600

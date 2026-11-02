@@ -422,6 +422,22 @@ class NetLogTailing(unittest.TestCase):
         watch.tick(1070.0, games=[])
         self.assertEqual(fired, [10])
 
+    def test_a_zone_change_does_not_end_a_stall(self):
+        # 2026-11-02: a dead pipeline still produced 01/02/03/11/12/40/265 lines on a zone change, and the note was cleared
+        with open(self.path, "w") as f:
+            f.write("")
+        watch = pw.StallWatch(self.dir)
+        watch.on_stall = lambda now, games, chat, path=None: None
+        cleared = self.stub_attention()
+        with open(self.path, "a") as f:
+            f.write("00|t|0029||hit|h\n" * 10)
+        watch.tick(1000.0, games=[])
+        with open(self.path, "a") as f:
+            f.write("01|t|8E|Zone\n02|t|10001234|Name\n03|t|10001234|Name\n11|t|1|10001234\n12|t|19|100\n40|t|8E|Region|Place\n265|t|0|0|0\n")
+        watch.tick(1005.0, games=[])
+        self.assertEqual(cleared, [])
+        self.assertTrue(watch.stalled[self.path])
+
     def test_the_note_is_not_raised_again_while_the_parser_stays_silent(self):
         with open(self.path, "w") as f:
             f.write("")
