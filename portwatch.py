@@ -1403,12 +1403,19 @@ def update_note(installed, judged_on):
 
 
 class PolicyWatch:
+    """Once after each close (the file is fresh and a fix may be written) and once at each launch (the user usually
+    shuts the Mac down right after closing, so the close-time check may never run; the note then waits at login)."""
     def __init__(self):
         self.gone_at = None
         self.checked = False
+        self.was_running = None
 
     def tick(self, now, games):
-        if games:
+        running = bool(games)
+        if running and self.was_running is False:
+            self.run(at_close=False)
+        self.was_running = running
+        if running:
             self.gone_at = None
             self.checked = False
             return
@@ -1417,9 +1424,9 @@ class PolicyWatch:
         if self.checked or now - self.gone_at < POLICY_AFTER:
             return
         self.checked = True
-        self.run()
+        self.run(at_close=True)
 
-    def run(self):
+    def run(self, at_close):
         try:
             report = subprocess.run([sys.executable, RSR_CHECK], capture_output=True, text=True, timeout=120).stdout
         except (OSError, subprocess.SubprocessError) as ex:
@@ -1427,6 +1434,8 @@ class PolicyWatch:
         note = policy_note(report)
         log("RSR policy: " + (note or "matches"))
         set_attention("RSR", event_note(note) if note else None)
+        if note and at_close:
+            notify("Rotation Solver Reborn settings", f"{note}; the game is closed, so the policy can be re-applied now.")
         try:
             judged = json.load(open(RSR_POLICY)).get("judged_on", "")
             installed = os.listdir(RSR_PLUGIN_DIR)
