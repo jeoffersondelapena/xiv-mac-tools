@@ -1373,7 +1373,7 @@ class InstallNudge:
 RSR_CHECK = os.path.expanduser("~/.claude/skills/rsr-settings/rsr_check.py")
 RSR_POLICY = os.path.expanduser("~/.claude/skills/rsr-settings/policy.json")
 RSR_PLUGIN_DIR = os.path.join(BASE, "installedPlugins", "RotationSolver")
-POLICY_AFTER = 5     # RSR writes its file while the window is still closing; once the process is gone the file is final
+POLICY_AFTER = 20
 
 
 def policy_note(report):
