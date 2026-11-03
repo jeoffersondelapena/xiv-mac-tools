@@ -1373,7 +1373,7 @@ class InstallNudge:
 RSR_CHECK = os.path.expanduser("~/.claude/skills/rsr-settings/rsr_check.py")
 RSR_POLICY = os.path.expanduser("~/.claude/skills/rsr-settings/policy.json")
 RSR_PLUGIN_DIR = os.path.join(BASE, "installedPlugins", "RotationSolver")
-POLICY_AFTER = 20
+POLICY_AFTER = 5     # RSR writes its file while the window is still closing; once the process is gone the file is final
 
 
 def policy_note(report):
@@ -1413,7 +1413,7 @@ class PolicyWatch:
     def tick(self, now, games):
         running = bool(games)
         if running and self.was_running is False:
-            self.run(at_close=False)
+            self.run()
         self.was_running = running
         if running:
             self.gone_at = None
@@ -1424,9 +1424,9 @@ class PolicyWatch:
         if self.checked or now - self.gone_at < POLICY_AFTER:
             return
         self.checked = True
-        self.run(at_close=True)
+        self.run()
 
-    def run(self, at_close):
+    def run(self):
         try:
             report = subprocess.run([sys.executable, RSR_CHECK], capture_output=True, text=True, timeout=120).stdout
         except (OSError, subprocess.SubprocessError) as ex:
@@ -1434,8 +1434,6 @@ class PolicyWatch:
         note = policy_note(report)
         log("RSR policy: " + (note or "matches"))
         set_attention("RSR", event_note(note) if note else None)
-        if note and at_close:
-            notify("Rotation Solver Reborn settings", f"{note}; the game is closed, so the policy can be re-applied now.")
         try:
             judged = json.load(open(RSR_POLICY)).get("judged_on", "")
             installed = os.listdir(RSR_PLUGIN_DIR)

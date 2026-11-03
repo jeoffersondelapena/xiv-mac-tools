@@ -682,20 +682,20 @@ class PolicyNotes(unittest.TestCase):
     def test_the_watch_checks_once_per_close_after_the_file_settled_and_once_per_launch(self):
         watch = pw.PolicyWatch()
         runs = []
-        watch.run = lambda at_close: runs.append("close" if at_close else "launch")
+        watch.run = lambda: runs.append(1)
         watch.tick(1000.0, games=[("pid", 0, 0, 0)])   # already running when the watcher starts: no launch seen
         watch.tick(1010.0, games=[])
         watch.tick(1010.0 + pw.POLICY_AFTER - 1, games=[])
         self.assertEqual(runs, [])
         watch.tick(1010.0 + pw.POLICY_AFTER, games=[])
         watch.tick(1100.0, games=[])
-        self.assertEqual(runs, ["close"])
+        self.assertEqual(runs, [1])
         watch.tick(1200.0, games=[("pid", 0, 0, 0)])
         watch.tick(1204.0, games=[("pid", 0, 0, 0)])
-        self.assertEqual(runs, ["close", "launch"])
+        self.assertEqual(runs, [1, 1])
         watch.tick(1300.0, games=[])
         watch.tick(1300.0 + pw.POLICY_AFTER, games=[])
-        self.assertEqual(runs, ["close", "launch", "close"])
+        self.assertEqual(runs, [1, 1, 1])
 
 
 class HangDetection(unittest.TestCase):
