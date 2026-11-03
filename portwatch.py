@@ -471,11 +471,11 @@ class StallWatch:
 
 
 
-# XIV Doctor's per-window diag log carries a heartbeat every minute while the game's frame loop runs, which
+# XIV Helper's per-window diag log carries a heartbeat every minute while the game's frame loop runs, which
 # makes a silent file the cheapest external sign that a live window has frozen (2026-09-06 00:32: one
 # thread spinning in Rosetta's exception server, heartbeats simply stopped). IINACT carried the beat until
-# 2026-09-30; a parser that failed to load switched freeze detection off, and XIV Doctor is always on.
-DOCTOR_DIAG_DIR = os.path.join(CFG, "XIVDoctor", "diag")
+# 2026-09-30; a parser that failed to load switched freeze detection off, and XIV Helper is always on.
+DOCTOR_DIAG_DIR = os.path.join(CFG, "XIVHelper", "diag")
 HANG_AFTER = 150          # the ceiling: two missed beats of the one-minute cadence older plugin builds keep
 HANG_FLOOR = 20           # four missed beats of the five-second cadence: a hang in a duty gets force-quit within a minute
 STALL_AFTER = 25          # plugin loading stalls the frame loop 10-17 s on every boot; sampling then hit a healthy, busy game (2026-09-30 18:18)
@@ -483,8 +483,8 @@ START_MATCH_SLACK = 20    # the diag name carries Wine's idea of the start time
 
 
 def diag_start_time(name):
-    """Process start time encoded in a per-window diag name, `doctor-YYYYMMDD-HHMMSS-<pid>.log` or IINACT's, else None."""
-    m = re.match(r"(?:doctor|iinact)-(\d{8})-(\d{6})-\d+\.log$", name)
+    """Process start time encoded in a per-window diag name, `helper-YYYYMMDD-HHMMSS-<pid>.log` or IINACT's, else None."""
+    m = re.match(r"(?:helper|doctor|iinact)-(\d{8})-(\d{6})-\d+\.log$", name)
     if not m:
         return None
     return datetime.datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").timestamp()
@@ -548,7 +548,7 @@ class HangWatch:
             if not self.reported:
                 set_attention("GameWindow", None)
         try:
-            names = [n for n in os.listdir(self.directory) if n.startswith("doctor-")]
+            names = [n for n in os.listdir(self.directory) if n.startswith("helper-")]
         except OSError:
             return
         for name in names:
@@ -636,7 +636,7 @@ def memory_explains_freeze(level):
     return level in (2, 4)
 
 
-# A game that began to close and never finished. XIV Doctor's last line says the game itself is closing (a plugin
+# A game that began to close and never finished. XIV Helper's last line says the game itself is closing (a plugin
 # switched off writes plain 'unloading'), nothing follows it, and the process is still there. 58 normal exits in
 # September took at most 22 s. On 2026-09-30 22:44 one stopped while unloading a plugin and sat at two cores for
 # fifteen minutes; nothing noticed, because HangWatch reads 'unloading' as intentional.
@@ -657,7 +657,7 @@ def exit_report(pid, age, memory, diag_tail, dalamud_tail, sample=None):
     where = ([f"Dalamud finished shutting down ({ended[0][:23]}); the game process did not exit after that."] if ended else []) \
         + ([f"thread sample of the stuck process: {os.path.basename(sample)}"] if sample else [])
     return "\n".join([f"pid {pid} was still running {age:.0f} s after the game began to close, and was ended.", memory, *where, "",
-                      "last lines of the window's XIV Doctor log:", *diag_tail.splitlines()[-6:], "",
+                      "last lines of the window's XIV Helper log:", *diag_tail.splitlines()[-6:], "",
                       "last plugin load and unload lines of dalamud.log (shared by all windows):", *unload, *ended]) + "\n"
 
 
@@ -704,7 +704,7 @@ class ExitWatch:
             else:
                 self.on_clean_exit(pid)
         try:
-            names = [n for n in os.listdir(self.directory) if n.startswith("doctor-")]
+            names = [n for n in os.listdir(self.directory) if n.startswith("helper-")]
         except OSError:
             return
         for name in names:
@@ -1256,7 +1256,7 @@ def stale_server_verdict(n_games, gone_for, killed, server_ages, youngest_wine_a
 def last_exit_was_kill(directory):
     """The plugin writes 'unloading' when the game shuts down by itself; a log that ends on anything else was cut off."""
     try:
-        names = [n for n in os.listdir(directory) if n.startswith("doctor-")]
+        names = [n for n in os.listdir(directory) if n.startswith("helper-")]
         if not names:
             return False
         newest = max(names, key=lambda n: os.path.getmtime(os.path.join(directory, n)))
@@ -1424,7 +1424,7 @@ def clock_gap(a, b):
 
 
 def doctor_memory(tail):
-    """The newest 'memory:' line XIV Doctor wrote, as numbers; None without one. Times are seconds of the day."""
+    """The newest 'memory:' line XIV Helper wrote, as numbers; None without one. Times are seconds of the day."""
     found = MEMORY_LINE_RE.findall(tail)
     if not found:
         return None
@@ -1438,7 +1438,7 @@ def doctor_memory(tail):
 
 
 def reading_disturbed(window, doctor):
-    """Whether the longest frame of the minute XIV Doctor just reported fell inside a reading: True or False once
+    """Whether the longest frame of the minute XIV Helper just reported fell inside a reading: True or False once
     that minute covers the reading, None while it does not. `window` is (start, end) in seconds of the day."""
     if not doctor or "longest_ms" not in doctor:
         return None
@@ -1522,7 +1522,7 @@ class MemoryLog:
         self.write(record)
 
     def judge(self, now, games):
-        """The readings must not be felt in the game. Each one is held against the longest frame XIV Doctor reports
+        """The readings must not be felt in the game. Each one is held against the longest frame XIV Helper reports
         for that minute; when readings keep holding it, only totals are read from then on."""
         if not self.pending:
             return
@@ -1569,7 +1569,7 @@ class MemoryLog:
             return None
         try:
             for name in os.listdir(self.directory):
-                at = diag_start_time(name) if name.startswith("doctor-") else None
+                at = diag_start_time(name) if name.startswith("helper-") else None
                 if at is not None and abs(at - started) <= START_MATCH_SLACK:
                     return doctor_memory(tail_of(os.path.join(self.directory, name), 8192))
         except OSError:

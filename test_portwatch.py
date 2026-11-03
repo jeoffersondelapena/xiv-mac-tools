@@ -664,7 +664,7 @@ class FreezeNotes(unittest.TestCase):
 class HangDetection(unittest.TestCase):
     def test_the_diag_name_carries_the_start_time(self):
         self.assertEqual(datetime.datetime(2026, 9, 6, 0, 25, 25).timestamp(), pw.diag_start_time("iinact-20260906-002525-364.log"))
-        self.assertEqual(datetime.datetime(2026, 9, 6, 0, 25, 25).timestamp(), pw.diag_start_time("doctor-20260906-002525-364.log"))
+        self.assertEqual(datetime.datetime(2026, 9, 6, 0, 25, 25).timestamp(), pw.diag_start_time("helper-20260906-002525-364.log"))
         self.assertIsNone(pw.diag_start_time("notes-20260906-002525-364.log"))
 
     def test_a_diag_file_is_matched_to_the_game_that_started_with_it(self):
@@ -702,15 +702,15 @@ class HangDetection(unittest.TestCase):
         self.assertFalse(pw.hang_verdict(file_age=4, has_heartbeat=False, last_line=last, threshold=150))
         self.assertFalse(pw.hang_verdict(file_age=19, has_heartbeat=False, last_line=last, threshold=150))
         self.assertTrue(pw.hang_verdict(file_age=20, has_heartbeat=False, last_line=last, threshold=150))
-        self.assertFalse(pw.hang_verdict(file_age=500, has_heartbeat=False, last_line="[10:53:32.635] XIV Doctor 0.1.0.0 loaded, pid 492", threshold=150))
+        self.assertFalse(pw.hang_verdict(file_age=500, has_heartbeat=False, last_line="[10:53:32.635] XIV Helper 0.1.0.0 loaded, pid 492", threshold=150))
 
     def test_a_launch_frozen_during_plugin_loading_is_reported_with_the_whole_stall(self):
         import tempfile, time
         d = tempfile.mkdtemp()
         started = time.time() - 60
-        path = os.path.join(d, "doctor-%s-492.log" % datetime.datetime.fromtimestamp(started).strftime("%Y%m%d-%H%M%S"))
+        path = os.path.join(d, "helper-%s-492.log" % datetime.datetime.fromtimestamp(started).strftime("%Y%m%d-%H%M%S"))
         with open(path, "w") as f:
-            f.write("[10:53:32.635] XIV Doctor 0.1.0.0 loaded, pid 492\n[10:53:34.825] frame loop stalled 2s; gc 267/58/13, pool busy 28, queued 0\n"
+            f.write("[10:53:32.635] XIV Helper 0.1.0.0 loaded, pid 492\n[10:53:34.825] frame loop stalled 2s; gc 267/58/13, pool busy 28, queued 0\n"
                     "[10:53:38.601] frame loop stalled 6s; gc 411/117/14, pool busy 6, queued 0\n")
         now = time.time()
         os.utime(path, (now - 30, now - 30))
@@ -725,7 +725,7 @@ class HangDetection(unittest.TestCase):
         import tempfile, time
         d = tempfile.mkdtemp()
         started = time.time() - 600
-        path = os.path.join(d, "doctor-%s-364.log" % datetime.datetime.fromtimestamp(started).strftime("%Y%m%d-%H%M%S"))
+        path = os.path.join(d, "helper-%s-364.log" % datetime.datetime.fromtimestamp(started).strftime("%Y%m%d-%H%M%S"))
         with open(path, "w") as f:
             f.write("[14:00:00.0] heartbeat: a\n[14:00:05.0] heartbeat: b\n[14:00:31.0] frame loop stalled 26s; gc 1/1/1\n")
         watch = pw.HangWatch(d)
@@ -748,11 +748,11 @@ class HangDetection(unittest.TestCase):
         import tempfile, time
         d = tempfile.mkdtemp()
         started = time.time() - 600
-        frozen = os.path.join(d, "doctor-%s-364.log" % datetime.datetime.fromtimestamp(started).strftime("%Y%m%d-%H%M%S"))
+        frozen = os.path.join(d, "helper-%s-364.log" % datetime.datetime.fromtimestamp(started).strftime("%Y%m%d-%H%M%S"))
         with open(frozen, "w") as f:
-            f.write("[x] XIV Doctor 0.1.0.0 loaded, pid 364\n[x] heartbeat: logged in True; territory 130\n")
+            f.write("[x] XIV Helper 0.1.0.0 loaded, pid 364\n[x] heartbeat: logged in True; territory 130\n")
         os.utime(frozen, (started + 60, started + 60))
-        healthy = os.path.join(d, "doctor-%s-2632.log" % datetime.datetime.fromtimestamp(started + 100).strftime("%Y%m%d-%H%M%S"))
+        healthy = os.path.join(d, "helper-%s-2632.log" % datetime.datetime.fromtimestamp(started + 100).strftime("%Y%m%d-%H%M%S"))
         with open(healthy, "w") as f:
             f.write("[x] heartbeat: logged in True; territory 130\n")
         watch = pw.HangWatch(d)
@@ -825,7 +825,7 @@ class StaleServer(unittest.TestCase):
     def test_a_log_cut_off_mid_session_means_the_game_was_killed(self):
         import tempfile
         d = tempfile.mkdtemp()
-        path = os.path.join(d, "doctor-20260930-140841-492.log")
+        path = os.path.join(d, "helper-20260930-140841-492.log")
         with open(path, "w") as f:
             f.write("[14:46:12.0] heartbeat: logged in True; territory 974\n")
         self.assertTrue(pw.last_exit_was_kill(d))
@@ -858,7 +858,7 @@ class StuckClosing(unittest.TestCase):
 
     def diag(self, d, started, last_line, age, pid_suffix=492):
         import time
-        path = os.path.join(d, "doctor-%s-%d.log" % (datetime.datetime.fromtimestamp(started).strftime("%Y%m%d-%H%M%S"), pid_suffix))
+        path = os.path.join(d, "helper-%s-%d.log" % (datetime.datetime.fromtimestamp(started).strftime("%Y%m%d-%H%M%S"), pid_suffix))
         with open(path, "w") as f:
             f.write("[x] heartbeat: logged in True; territory 131\n" + last_line + "\n")
         os.utime(path, (time.time() - age, time.time() - age))
