@@ -661,6 +661,41 @@ class FreezeNotes(unittest.TestCase):
         self.assertFalse(pw.memory_explains_freeze(None))
 
 
+class PolicyNotes(unittest.TestCase):
+    def test_a_matching_report_needs_no_note(self):
+        self.assertIsNone(pw.policy_note("RSR config saved ...\nRESULT: matches policy\n"))
+
+    def test_drift_is_counted(self):
+        self.assertEqual("3 Rotation Solver Reborn setting(s) differ from the policy",
+                         pw.policy_note("  DIFFERS switch X\nRESULT: 3 setting(s) differ; run with --write while the game is closed to apply\n"))
+
+    def test_a_blocked_checker_is_reported_in_its_own_words(self):
+        self.assertEqual("BLOCKED — RotationSolver.json does not exist yet", pw.policy_note("RESULT: BLOCKED — RotationSolver.json does not exist yet\n"))
+        self.assertEqual("the Rotation Solver Reborn policy checker gave no verdict", pw.policy_note(""))
+
+    def test_a_newer_install_than_the_policy_was_judged_on_asks_for_a_review(self):
+        self.assertIsNone(pw.update_note(["7.5.7.14"], "7.5.7.14"))
+        self.assertEqual("Rotation Solver Reborn 7.5.8.2 is installed but the policy was judged on 7.5.7.14; its new options need a review",
+                         pw.update_note(["7.5.7.14", "7.5.8.2", "bak"], "7.5.7.14"))
+        self.assertIsNone(pw.update_note([], "7.5.7.14"))
+
+    def test_the_watch_checks_once_per_close_after_the_file_settled(self):
+        watch = pw.PolicyWatch()
+        runs = []
+        watch.run = lambda: runs.append(1)
+        watch.tick(1000.0, games=[("pid", 0, 0, 0)])
+        watch.tick(1010.0, games=[])
+        watch.tick(1010.0 + pw.POLICY_AFTER - 1, games=[])
+        self.assertEqual(runs, [])
+        watch.tick(1010.0 + pw.POLICY_AFTER, games=[])
+        watch.tick(1100.0, games=[])
+        self.assertEqual(runs, [1])
+        watch.tick(1200.0, games=[("pid", 0, 0, 0)])
+        watch.tick(1300.0, games=[])
+        watch.tick(1300.0 + pw.POLICY_AFTER, games=[])
+        self.assertEqual(runs, [1, 1])
+
+
 class HangDetection(unittest.TestCase):
     def test_the_diag_name_carries_the_start_time(self):
         self.assertEqual(datetime.datetime(2026, 9, 6, 0, 25, 25).timestamp(), pw.diag_start_time("iinact-20260906-002525-364.log"))

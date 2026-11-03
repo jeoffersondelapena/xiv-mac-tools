@@ -1368,6 +1368,74 @@ class InstallNudge:
         subprocess.run(["launchctl", "kickstart", f"gui/{os.getuid()}/{SYNC_AGENT}"], capture_output=True)
 
 
+# Rotation Solver Reborn rewrites its settings file when a window closes, so the policy checker runs once per close
+# (nothing runs while a game is up); an installed version newer than the one the policy was judged on needs a review.
+RSR_CHECK = os.path.expanduser("~/.claude/skills/rsr-settings/rsr_check.py")
+RSR_POLICY = os.path.expanduser("~/.claude/skills/rsr-settings/policy.json")
+RSR_PLUGIN_DIR = os.path.join(BASE, "installedPlugins", "RotationSolver")
+POLICY_AFTER = 20
+
+
+def policy_note(report):
+    """None when the checker's report says the file matches, else what to tell the player."""
+    m = re.search(r"RESULT: (\d+) setting\(s\) differ", report)
+    if m:
+        return f"{m.group(1)} Rotation Solver Reborn setting(s) differ from the policy"
+    if "RESULT: matches policy" in report:
+        return None
+    verdicts = [l for l in report.splitlines() if l.startswith("RESULT:")]
+    return verdicts[-1].replace("RESULT: ", "") if verdicts else "the Rotation Solver Reborn policy checker gave no verdict"
+
+
+def version_key(version):
+    return tuple(int(part) for part in version.split("."))
+
+
+def update_note(installed, judged_on):
+    """A note when the newest installed Rotation Solver Reborn is not the version the policy was judged on."""
+    versions = [v for v in installed if re.match(r"^\d+(\.\d+)+$", v)]
+    if not versions:
+        return None
+    newest = max(versions, key=version_key)
+    if newest == judged_on:
+        return None
+    return f"Rotation Solver Reborn {newest} is installed but the policy was judged on {judged_on}; its new options need a review"
+
+
+class PolicyWatch:
+    def __init__(self):
+        self.gone_at = None
+        self.checked = False
+
+    def tick(self, now, games):
+        if games:
+            self.gone_at = None
+            self.checked = False
+            return
+        if self.gone_at is None:
+            self.gone_at = now
+        if self.checked or now - self.gone_at < POLICY_AFTER:
+            return
+        self.checked = True
+        self.run()
+
+    def run(self):
+        try:
+            report = subprocess.run([sys.executable, RSR_CHECK], capture_output=True, text=True, timeout=120).stdout
+        except (OSError, subprocess.SubprocessError) as ex:
+            report = f"RESULT: the checker could not run ({ex})"
+        note = policy_note(report)
+        log("RSR policy: " + (note or "matches"))
+        set_attention("RSR", event_note(note) if note else None)
+        try:
+            judged = json.load(open(RSR_POLICY)).get("judged_on", "")
+            installed = os.listdir(RSR_PLUGIN_DIR)
+        except (OSError, ValueError):
+            return
+        upgrade = update_note(installed, judged)
+        set_attention("RSRUpdate", event_note(upgrade) if upgrade else None)
+
+
 # per-window memory breakdown, once a minute while a game runs; the 2026-09-30 freezes left no such data
 MEMORY_LOG = os.path.join(BASE, "wedge-watch", "memory.log")
 MEMORY_EVERY = 60
@@ -1680,6 +1748,7 @@ def watch():
     memory_log = MemoryLog()
     server_sweep = ServerSweep()
     install_nudge = InstallNudge()
+    policy_watch = PolicyWatch()
     last_exit_at = None
     while True:
         live = game_pids()
@@ -1691,6 +1760,7 @@ def watch():
         sweep_orphan_renderers(kill=True, say=log)
         server_sweep.tick(time.time(), running_now)
         install_nudge.tick(time.time(), running_now)
+        policy_watch.tick(time.time(), running_now)
         held = bound_ports(live)
         state = tuple(sorted(held.items()))
         if state != last:
