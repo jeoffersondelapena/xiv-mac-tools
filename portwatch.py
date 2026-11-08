@@ -1378,13 +1378,18 @@ POLICY_AFTER = 20
 
 def policy_note(report):
     """None when the checker's report says the file matches, else what to tell the player."""
+    parts = []
     m = re.search(r"RESULT: (\d+) setting\(s\) differ", report)
     if m:
-        return f"{m.group(1)} Rotation Solver Reborn setting(s) differ from the policy"
-    if "RESULT: matches policy" in report:
-        return None
-    verdicts = [l for l in report.splitlines() if l.startswith("RESULT:")]
-    return verdicts[-1].replace("RESULT: ", "") if verdicts else "the Rotation Solver Reborn policy checker gave no verdict"
+        parts.append(f"{m.group(1)} Rotation Solver Reborn setting(s) differ from the policy")
+    elif "RESULT: matches policy" not in report:
+        verdicts = [l for l in report.splitlines() if l.startswith("RESULT:")]
+        return verdicts[-1].replace("RESULT: ", "") if verdicts else "the Rotation Solver Reborn policy checker gave no verdict"
+    # settings the policy leaves alone must still sit at RSR's defaults; the checker reports those apart from RESULT
+    d = re.search(r"DEFAULTS: (\d+) ungoverned setting\(s\) differ from RSR (\S+)", report)
+    if d:
+        parts.append(f"{d.group(1)} Rotation Solver Reborn setting(s) outside the policy differ from RSR {d.group(2)}'s defaults")
+    return "; ".join(parts) or None
 
 
 def version_key(version):
@@ -1433,6 +1438,9 @@ class PolicyWatch:
             report = f"RESULT: the checker could not run ({ex})"
         note = policy_note(report)
         log("RSR policy: " + (note or "matches"))
+        for line in report.splitlines():
+            if line.startswith("DEFAULTS: not audited"):
+                log("RSR defaults: " + line[len("DEFAULTS: "):])
         set_attention("RSR", event_note(note) if note else None)
         try:
             judged = json.load(open(RSR_POLICY)).get("judged_on", "")

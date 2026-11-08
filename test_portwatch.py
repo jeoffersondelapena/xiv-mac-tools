@@ -673,6 +673,17 @@ class PolicyNotes(unittest.TestCase):
         self.assertEqual("BLOCKED — RotationSolver.json does not exist yet", pw.policy_note("RESULT: BLOCKED — RotationSolver.json does not exist yet\n"))
         self.assertEqual("the Rotation Solver Reborn policy checker gave no verdict", pw.policy_note(""))
 
+    def test_drift_from_the_defaults_outside_the_policy_is_a_note_too(self):
+        report = "RESULT: matches policy\naudit: 229 ungoverned key(s) compared\nDEFAULTS: 2 ungoverned setting(s) differ from RSR 7.5.7.15\n"
+        self.assertEqual("2 Rotation Solver Reborn setting(s) outside the policy differ from RSR 7.5.7.15's defaults", pw.policy_note(report))
+        both = "RESULT: 1 setting(s) differ; run with --write while the game is closed to apply\nDEFAULTS: 2 ungoverned setting(s) differ from RSR 7.5.7.15\n"
+        self.assertEqual("1 Rotation Solver Reborn setting(s) differ from the policy; 2 Rotation Solver Reborn setting(s) outside the policy differ from RSR 7.5.7.15's defaults",
+                         pw.policy_note(both))
+        self.assertIsNone(pw.policy_note("RESULT: matches policy\nDEFAULTS: all ungoverned settings at RSR 7.5.7.15 defaults\n"))
+
+    def test_an_audit_that_could_not_run_is_logged_not_noted(self):
+        self.assertIsNone(pw.policy_note("RESULT: matches policy\nDEFAULTS: not audited (RSR 7.5.7.15 source not downloadable: offline)\n"))
+
     def test_a_newer_install_than_the_policy_was_judged_on_asks_for_a_review(self):
         self.assertIsNone(pw.update_note(["7.5.7.14"], "7.5.7.14"))
         self.assertEqual("Rotation Solver Reborn 7.5.8.2 is installed but the policy was judged on 7.5.7.14; its new options need a review",
