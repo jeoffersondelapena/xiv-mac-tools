@@ -7,6 +7,8 @@ import os, re, time, re, subprocess, sys, time, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from attention import set_attention, event_note  # noqa: E402
 
+import portwatch
+
 LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "netwatch.log")
 DALAMUD = os.path.expanduser("~/Library/Application Support/XIV on Mac/logs/dalamud.log")
 GAME_IP = "124.150.157.1"   # inside SE's JP game range
@@ -31,19 +33,23 @@ def note(msg):
     with open(LOG, "a") as f: f.write(line + "\n")
     print(line, flush=True)
 
-_WINE_EXE = re.compile(r"^[A-Za-z]:\\.*?\.exe(?=\s|$)")
+
+def pids_in_listing(out):
+    """Game pids in a `ps -Ao pid=,command=` listing: Windows path through the Dalamud injector,
+    Unix path when XIV on Mac starts the game itself."""
+    pids = []
+    for line in out.splitlines():
+        pid, _, cmd = line.strip().partition(" ")
+        path = portwatch.wine_exe_path(cmd)
+        if path and path.endswith(("\\ffxiv_dx11.exe", "/ffxiv_dx11.exe")):
+            pids.append(pid)
+    return pids
+
 
 def game_pids():
     """macOS pids of the game itself. pgrep -f also matched DalamudCrashHandler, whose command line
     names the game exe, and the Wine paths hold spaces so argv[0] cannot be split off."""
-    out = sh("ps", "-Ao", "pid=,command=")
-    pids = []
-    for line in out.splitlines():
-        pid, _, cmd = line.strip().partition(" ")
-        m = _WINE_EXE.match(cmd)
-        if m and m.group(0).endswith("\\ffxiv_dx11.exe"):
-            pids.append(pid)
-    return pids
+    return pids_in_listing(sh("ps", "-Ao", "pid=,command="))
 
 
 def from_macos():

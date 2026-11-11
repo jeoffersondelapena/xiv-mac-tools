@@ -23,6 +23,8 @@ import datetime, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile,
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from attention import ATTENTION, attention_lines, set_attention  # noqa: E402,F401
 
+import portwatch
+
 BASE = os.path.expanduser("~/Library/Application Support/XIV on Mac")
 STATE = os.path.join(BASE, "wedge-watch", "upstream-sync-state.json")
 LOG = os.path.join(BASE, "wedge-watch", "upstream-sync.log")
@@ -76,7 +78,6 @@ POLICIES = [
 ]
 TOOL_TIMEOUT = 40 * 60
 RUN_TIMEOUT = 25 * 60
-WINE_CMD_RE = re.compile(r"^[A-Za-z]:\\.*?\.exe(?=\s|$)")
 
 PLUGINS = [
     {"name": "IINACT", "fork": "jeoffersondelapena/IINACT", "upstream": "marzent/IINACT", "upstream_branch": "main",
@@ -112,9 +113,14 @@ def sh(args, cwd=None, check=True):
     return r.stdout.strip()
 
 
+def game_in_listing(out):
+    """True when a `ps -Ao command=` listing holds the game. Through the Dalamud injector it runs by
+    its Windows path; started by XIV on Mac itself (no Dalamud, as on patch day) by its Unix path."""
+    return any((p := portwatch.wine_exe_path(l)) and p.endswith(("\\ffxiv_dx11.exe", "/ffxiv_dx11.exe")) for l in out.splitlines())
+
+
 def game_running():
-    out = subprocess.run(["ps", "-Ao", "command="], capture_output=True, text=True).stdout
-    return any((m := WINE_CMD_RE.match(l)) and m.group(0).endswith("\\ffxiv_dx11.exe") for l in out.splitlines())
+    return game_in_listing(subprocess.run(["ps", "-Ao", "command="], capture_output=True, text=True).stdout)
 
 
 # --- pure decisions -------------------------------------------------------------------------------

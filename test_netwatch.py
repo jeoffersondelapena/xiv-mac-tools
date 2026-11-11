@@ -26,5 +26,11 @@ class WhenAFailedFetchIsThisMachinesProblem(unittest.TestCase):
         self.assertTrue(netwatch.ours(self.results(OK, OK), streak=netwatch.KEEPS_FAILING))
 
 
+class GamePids(unittest.TestCase):
+    def test_both_launch_shapes_count_and_the_crash_handler_does_not(self):
+        listing = "103 " + '/bin/zsh -c echo Z:\\\\x\\\\game\\\\ffxiv_dx11.exe //token' + "\n100 " + 'Z:\\\\Users\\\\x\\\\Library\\\\Application Support\\\\XIV on Mac\\\\ffxiv\\\\game\\\\ffxiv_dx11.exe //**sqex0003token' + "\n101 " + '/Users/x/Library/Application Support/XIV on Mac/ffxiv/game/ffxiv_dx11.exe //**sqex0003token' + "\n102 " + 'Z:\\\\Users\\\\x\\\\Library\\\\Application Support\\\\XIV on Mac\\\\dalamud\\\\Hooks\\\\15.0.4.0\\\\DalamudCrashHandler.exe --process-handle=404 --log-directory=Z:\\\\x\\\\logs ffxiv_dx11.exe' + "\n"
+        self.assertEqual(["100", "101"], netwatch.pids_in_listing(listing))
+
+
 if __name__ == "__main__":
     unittest.main()

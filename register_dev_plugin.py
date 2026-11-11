@@ -7,13 +7,18 @@ InternalName (a fork of a repo plugin) is switched off, since Dalamud loads only
 """
 import copy, datetime, json, os, re, shutil, subprocess, sys, uuid
 
+import portwatch
+
 BASE = os.path.expanduser("~/Library/Application Support/XIV on Mac")
-WINE_CMD_RE = re.compile(r"^[A-Za-z]:\\.*?\.exe(?=\s|$)")
+
+
+def game_in_listing(out):
+    """Windows path through the Dalamud injector, Unix path when XIV on Mac starts the game itself."""
+    return any((p := portwatch.wine_exe_path(l)) and p.endswith(("\\ffxiv_dx11.exe", "/ffxiv_dx11.exe")) for l in out.splitlines())
 
 
 def game_running():
-    out = subprocess.run(["ps", "-Ao", "command="], capture_output=True, text=True).stdout
-    return any((m := WINE_CMD_RE.match(l)) and m.group(0).endswith("\\ffxiv_dx11.exe") for l in out.splitlines())
+    return game_in_listing(subprocess.run(["ps", "-Ao", "command="], capture_output=True, text=True).stdout)
 
 
 def wine_path(path):

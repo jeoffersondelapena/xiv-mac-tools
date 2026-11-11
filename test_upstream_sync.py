@@ -551,3 +551,19 @@ class GearSkill(unittest.TestCase):
         self.assertTrue(note.startswith("the game data for 2027.01.10.0000.0000 added 1 (highest item level 850, e.g. Eighth Umbral Ring of Aiming)"), note)
         self.assertIn("gear at item level 840 or above", note)
 
+
+class GameDetection(unittest.TestCase):
+    # the 2026-09-08 portwatch fix (a game XIV on Mac starts itself runs by its Unix path) was missing
+    # here, so on 2026-11-10 the lists were regenerated beside a running game
+    WIN = 'Z:\\\\Users\\\\x\\\\Library\\\\Application Support\\\\XIV on Mac\\\\ffxiv\\\\game\\\\ffxiv_dx11.exe //**sqex0003token'
+    UNIX = '/Users/x/Library/Application Support/XIV on Mac/ffxiv/game/ffxiv_dx11.exe //**sqex0003token'
+    HANDLER = 'Z:\\\\Users\\\\x\\\\Library\\\\Application Support\\\\XIV on Mac\\\\dalamud\\\\Hooks\\\\15.0.4.0\\\\DalamudCrashHandler.exe --process-handle=404 --log-directory=Z:\\\\x\\\\logs ffxiv_dx11.exe'
+    SHELL = '/bin/zsh -c echo Z:\\\\x\\\\game\\\\ffxiv_dx11.exe //token'
+
+    def test_both_launch_shapes_are_the_game(self):
+        self.assertTrue(us.game_in_listing(self.WIN))
+        self.assertTrue(us.game_in_listing(self.UNIX))
+
+    def test_the_crash_handler_and_a_shell_naming_the_exe_are_not(self):
+        self.assertFalse(us.game_in_listing(self.HANDLER + "\n" + self.SHELL))
+
