@@ -29,6 +29,7 @@ BASE = os.path.expanduser("~/Library/Application Support/XIV on Mac")
 STATE = os.path.join(BASE, "wedge-watch", "upstream-sync-state.json")
 LOG = os.path.join(BASE, "wedge-watch", "upstream-sync.log")
 WORKFLOW = "upstream-sync.yml"
+HOLD_DAYS = 14   # a parked fork sync wakes on this date, or sooner when the game moves to a new version
 LOG_DIR = os.path.join(BASE, "logs")
 LOG_ARCHIVE = os.path.join(BASE, "wedge-watch", "log-archive")
 LOG_ARCHIVE_KEEP = 30
@@ -781,6 +782,29 @@ def remember_note(st, source, note):
     set_attention(source, note)
 
 
+def start_hold(st, now, version, days=HOLD_DAYS, reason=None):
+    """Park a fork's sync: no workflow runs and its note rests until the date passes or the game moves on."""
+    st["hold"] = {"until": (now + datetime.timedelta(days=days)).isoformat(timespec="seconds"), "game_version": version,
+                  "reason": reason, "note": st.pop("note", None)}
+    return st["hold"]
+
+
+def hold_over(hold, now, version):
+    """Why a hold has ended, or None while it stands."""
+    if now >= datetime.datetime.fromisoformat(hold["until"]):
+        return f"the hold's date ({hold['until'][:10]}) passed"
+    if version and hold.get("game_version") and version != hold["game_version"]:
+        return f"the game moved to {version}"
+    return None
+
+
+def end_hold(st):
+    """The sync runs again at the next look: the failed head no longer counts as tried."""
+    st.pop("hold", None)
+    st.pop("failed_upstream", None)
+    st.pop("failed_branch", None)
+
+
 def reassert_notes(state):
     """Every note still standing, as (source, note); called each tick before the chores."""
     notes = [(name, st["note"]) for name, st in state.items() if isinstance(st, dict) and st.get("note")]
@@ -791,6 +815,14 @@ def reassert_notes(state):
 def sync_one(plugin, state):
     name = plugin["name"]
     st = state.setdefault(name, {})
+    hold = st.get("hold")
+    if hold:
+        why = hold_over(hold, datetime.datetime.now(), game_version())
+        if why is None:
+            return
+        end_hold(st)
+        log(f"{name}: hold over, {why}; the upstream sync runs again")
+        notify(f"{name}: sync hold over", f"{why[0].upper()}{why[1:]}; the upstream sync runs again and says so in-game if it still needs a hand.")
     pending = st.get("pending_install")
     if pending:
         return finish_install(plugin, st, pending)
@@ -933,13 +965,27 @@ def main():
         save_state(state)
 
 
-def by_hand(action, name):
+def by_hand(action, name, rest=()):
     plugin = next((p for p in PLUGINS if p["name"] == name), None)
     if plugin is None:
         sys.exit(f"unknown plugin {name}; known: {', '.join(p['name'] for p in PLUGINS)}")
     state = load_state()
     st = state.setdefault(name, {})
-    if action == "--build":
+    if action == "--hold":
+        days = int(rest[0]) if rest and rest[0].isdigit() else HOLD_DAYS
+        reason = " ".join(rest[1:] if rest and rest[0].isdigit() else rest) or None
+        hold = start_hold(st, datetime.datetime.now(), game_version(), days, reason)
+        set_attention(name, None)
+        log(f"{name}: sync held until {hold['until'][:10]} or the next game version; the note rests ({reason or 'no reason given'})")
+        print(f"{name}: held until {hold['until'][:10]} or the next game version; the in-game note rests until then")
+    elif action == "--release":
+        if not st.get("hold"):
+            print(f"{name}: no hold stands")
+        else:
+            end_hold(st)
+            log(f"{name}: hold released by hand; the upstream sync runs at the next tick")
+            print(f"{name}: hold released; the sync runs at the next hourly tick")
+    elif action == "--build":
         log(f"{name}: running the fork's workflow for {branch_head(plugin)[:7]}, a change made in the fork itself")
         build_and_queue(plugin, st, upstream_head(plugin))
     elif st.get("pending_install"):
@@ -950,8 +996,8 @@ def by_hand(action, name):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] in ("--build", "--install-now"):
-        by_hand(sys.argv[1], sys.argv[2])
+    if len(sys.argv) >= 3 and sys.argv[1] in ("--build", "--install-now", "--hold", "--release"):
+        by_hand(sys.argv[1], sys.argv[2], sys.argv[3:])
     elif len(sys.argv) == 2 and sys.argv[1] == "--gear-plan-updated":
         state = load_state()
         gear_plan_updated(state, xivapi_key(), game_version())

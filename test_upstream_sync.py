@@ -8,6 +8,28 @@ us = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(us)
 
 
+class Holds(unittest.TestCase):
+    now = datetime.datetime(2026, 11, 14, 9, 0)
+
+    def test_a_hold_rests_the_note_and_ends_on_its_date_or_a_new_game_version(self):
+        st = {"note": "upstream sync needs a hand (workflow run 1 failure)", "failed_upstream": "bbb", "failed_branch": "f1"}
+        hold = us.start_hold(st, self.now, "2026.11.04.0000.0000", days=14, reason="UI rewrite upstream")
+        self.assertNotIn("note", st)
+        self.assertEqual(hold["note"], "upstream sync needs a hand (workflow run 1 failure)")
+        self.assertEqual(hold["until"], "2026-11-28T09:00:00")
+        self.assertEqual([], us.reassert_notes({"GatherBuddyReborn": st}))
+        self.assertIsNone(us.hold_over(hold, self.now + datetime.timedelta(days=13), "2026.11.04.0000.0000"))
+        self.assertIsNone(us.hold_over(hold, self.now, None))
+        self.assertEqual("the hold's date (2026-11-28) passed", us.hold_over(hold, self.now + datetime.timedelta(days=14), "2026.11.04.0000.0000"))
+        self.assertEqual("the game moved to 2026.11.20.0000.0000", us.hold_over(hold, self.now, "2026.11.20.0000.0000"))
+
+    def test_ending_a_hold_makes_the_failed_head_count_as_untried(self):
+        st = {"hold": {"until": "2026-11-28T09:00:00"}, "failed_upstream": "bbb", "failed_branch": "f1", "synced_upstream": "aaa"}
+        us.end_hold(st)
+        self.assertEqual({"synced_upstream": "aaa"}, st)
+        self.assertTrue(us.needs_sync(st, "bbb"))
+
+
 class WhenToSync(unittest.TestCase):
     def test_a_new_upstream_head_means_work(self):
         self.assertTrue(us.needs_sync({"synced_upstream": "aaa"}, "bbb"))
