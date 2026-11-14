@@ -1369,7 +1369,8 @@ class InstallNudge:
 
 
 # Rotation Solver Reborn rewrites its settings file when a window closes, so the policy checker runs once per close
-# (nothing runs while a game is up); an installed version newer than the one the policy was judged on needs a review.
+# (nothing runs while a game is up). The version note (installed newer than the policy was judged on) is two file
+# reads, so it follows the files on every pass, game or no game.
 RSR_CHECK = os.path.expanduser("~/.claude/skills/rsr-settings/rsr_check.py")
 RSR_POLICY = os.path.expanduser("~/.claude/skills/rsr-settings/policy.json")
 RSR_PLUGIN_DIR = os.path.join(BASE, "installedPlugins", "RotationSolver")
@@ -1414,8 +1415,10 @@ class PolicyWatch:
         self.gone_at = None
         self.checked = False
         self.was_running = None
+        self.update_seen = None
 
     def tick(self, now, games):
+        self.judge_update()
         running = bool(games)
         if running and self.was_running is False:
             self.run()
@@ -1442,11 +1445,18 @@ class PolicyWatch:
             if line.startswith("DEFAULTS: not audited"):
                 log("RSR defaults: " + line[len("DEFAULTS: "):])
         set_attention("RSR", event_note(note) if note else None)
+
+    def judge_update(self):
+        """The version note is set or cleared as soon as the policy file or the plugin folder changes."""
         try:
-            judged = json.load(open(RSR_POLICY)).get("judged_on", "")
-            installed = os.listdir(RSR_PLUGIN_DIR)
+            with open(RSR_POLICY) as f:
+                judged = json.load(f).get("judged_on", "")
+            installed = tuple(sorted(os.listdir(RSR_PLUGIN_DIR)))
         except (OSError, ValueError):
             return
+        if (judged, installed) == self.update_seen:
+            return
+        self.update_seen = (judged, installed)
         upgrade = update_note(installed, judged)
         set_attention("RSRUpdate", event_note(upgrade) if upgrade else None)
 

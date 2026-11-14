@@ -690,6 +690,29 @@ class PolicyNotes(unittest.TestCase):
                          pw.update_note(["7.5.7.14", "7.5.8.2", "bak"], "7.5.7.14"))
         self.assertIsNone(pw.update_note([], "7.5.7.14"))
 
+    def test_the_version_note_follows_the_policy_file_without_a_close(self):
+        folder, policy = tempfile.mkdtemp(), os.path.join(tempfile.mkdtemp(), "policy.json")
+        os.mkdir(os.path.join(folder, "7.5.8.3"))
+        with open(policy, "w") as f:
+            json.dump({"judged_on": "7.5.8.2"}, f)
+        saved = (pw.RSR_POLICY, pw.RSR_PLUGIN_DIR, pw.set_attention)
+        self.addCleanup(lambda: (setattr(pw, "RSR_POLICY", saved[0]), setattr(pw, "RSR_PLUGIN_DIR", saved[1]), setattr(pw, "set_attention", saved[2])))
+        pw.RSR_POLICY, pw.RSR_PLUGIN_DIR = policy, folder
+        notes = []
+        pw.set_attention = lambda source, note: notes.append((source, note))
+        watch = pw.PolicyWatch()
+        watch.run = lambda: None
+        watch.tick(1000.0, games=[("pid", 0, 0, 0)])   # the game is up: the version note is judged all the same
+        self.assertEqual(1, len(notes))
+        self.assertEqual("RSRUpdate", notes[0][0])
+        self.assertIn("7.5.8.3 is installed but the policy was judged on 7.5.8.2", notes[0][1])
+        watch.tick(1003.0, games=[("pid", 0, 0, 0)])   # nothing changed: no rewrite
+        self.assertEqual(1, len(notes))
+        with open(policy, "w") as f:
+            json.dump({"judged_on": "7.5.8.3"}, f)
+        watch.tick(1006.0, games=[("pid", 0, 0, 0)])   # the policy caught up: cleared on the next pass
+        self.assertEqual(("RSRUpdate", None), notes[-1])
+
     def test_the_watch_checks_once_per_close_after_the_file_settled_and_once_per_launch(self):
         watch = pw.PolicyWatch()
         runs = []
